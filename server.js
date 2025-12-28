@@ -66,41 +66,37 @@ app.use(bodyParser.json());
 // ======== TEST ROUTE ========
 app.get('/api/ping', (req, res) => res.json({ ok: true, time: new Date() }));
 
+// ======== AUTO-GENERATE STUDENT ID FUNCTION ========
+const generateStudentId = async (school) => {
+  const prefix = school === 'girls' ? 'AG' : 'AB';
+  const [rows] = await pool.query(
+    'SELECT id FROM students WHERE id LIKE ? ORDER BY id DESC LIMIT 1',
+    [`${prefix}-%`]
+  );
+  let nextNumber = 1001; // starting number
+  if (rows.length > 0) {
+    const lastId = rows[0].id;
+    const lastNum = parseInt(lastId.split('-')[1], 10);
+    nextNumber = lastNum + 1;
+  }
+  return `${prefix}-${nextNumber}`;
+};
+
 // ======== ADMIN LOGIN ========
 app.post('/api/admin/login', async (req, res) => {
-  console.log('🟢 Admin login attempt:', req.body);
-
   const { username, password } = req.body;
-  if (!username || !password) {
-    console.log('⛔ Missing username or password');
-    return res.status(400).json({ error: 'username and password required' });
-  }
+  if (!username || !password) return res.status(400).json({ error: 'username and password required' });
 
   try {
     const [rows] = await pool.query('SELECT * FROM admins WHERE username = ?', [username]);
     const admin = rows[0];
-
-    if (!admin) {
-      console.log('⛔ No such admin:', username);
-      return res.status(401).json({ error: 'invalid credentials' });
-    }
+    if (!admin) return res.status(401).json({ error: 'invalid credentials' });
 
     const match = await bcrypt.compare(password, admin.password_hash);
-    console.log('Password match result:', match);
+    if (!match) return res.status(401).json({ error: 'invalid credentials' });
 
-    if (!match) {
-      console.log('⛔ Wrong password for', username);
-      return res.status(401).json({ error: 'invalid credentials' });
-    }
-
-    const token = jwt.sign(
-      { adminId: admin.id, username: admin.username, role: 'admin' },
-      JWT_SECRET,
-      { expiresIn: '12h' }
-    );
-    console.log('✅ Admin login success for', username);
+    const token = jwt.sign({ adminId: admin.id, username: admin.username, role: 'admin' }, JWT_SECRET, { expiresIn: '12h' });
     res.json({ token });
-
   } catch (err) {
     console.error('Admin login error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -109,18 +105,20 @@ app.post('/api/admin/login', async (req, res) => {
 
 // ======== ADMIN: ADD STUDENT ========
 app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
-  const { id, name, school, form, pin } = req.body;
-  if (!id || !name || !school || !form || !pin)
-    return res.status(400).json({ error: 'All fields required' });
+  const { name, school, form, pin } = req.body;
+  if (!name || !school || !form) return res.status(400).json({ error: 'Name, school, and form are required' });
 
   try {
-    const pinHash = await bcrypt.hash(String(pin), 10);
+    const id = await generateStudentId(school); // auto-generate ID
+    const studentPin = pin || Math.floor(1000 + Math.random() * 9000).toString(); // auto PIN if not provided
+    const pinHash = await bcrypt.hash(String(studentPin), 10);
+
     await pool.query(
       'INSERT INTO students (id, name, school, form, pin_hash) VALUES (?, ?, ?, ?, ?)',
       [id, name, school, form, pinHash]
     );
 
-    res.json({ ok: true, message: 'Student added' });
+    res.json({ ok: true, message: 'Student added', studentId: id, pin: studentPin });
   } catch (err) {
     console.error('Error adding student:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -130,17 +128,11 @@ app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
 // ======== ADMIN: RESET STUDENT PIN ========
 app.put('/api/admin/students/reset-pin', verifyAdminToken, async (req, res) => {
   const { studentId, newPin } = req.body;
-  if (!studentId || !newPin) {
-    return res.status(400).json({ error: 'studentId and newPin required' });
-  }
+  if (!studentId || !newPin) return res.status(400).json({ error: 'studentId and newPin required' });
 
   try {
     const hashedPin = await bcrypt.hash(String(newPin), 10);
-    await pool.query(
-      'UPDATE students SET pin_hash = ? WHERE id = ?',
-      [hashedPin, studentId]
-    );
-
+    await pool.query('UPDATE students SET pin_hash = ? WHERE id = ?', [hashedPin, studentId]);
     res.json({ ok: true, message: `PIN reset for ${studentId}` });
   } catch (err) {
     console.error('Error resetting PIN:', err);
@@ -151,15 +143,10 @@ app.put('/api/admin/students/reset-pin', verifyAdminToken, async (req, res) => {
 // ======== ADMIN: ADD EXAM ========
 app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
   const { name, year, term } = req.body;
-  if (!name || !year || !term)
-    return res.status(400).json({ error: 'All fields required' });
+  if (!name || !year || !term) return res.status(400).json({ error: 'All fields required' });
 
   try {
-    const [result] = await pool.query(
-      'INSERT INTO exams (name, year, term) VALUES (?, ?, ?)',
-      [name, year, term]
-    );
-
+    const [result] = await pool.query('INSERT INTO exams (name, year, term) VALUES (?, ?, ?)', [name, year, term]);
     res.json({ ok: true, examId: result.insertId });
   } catch (err) {
     console.error('Error adding exam:', err);
@@ -170,15 +157,10 @@ app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
 // ======== ADMIN: ADD RESULTS ========
 app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
   const { studentId, examId, subject, score } = req.body;
-  if (!studentId || !examId || !subject || score == null)
-    return res.status(400).json({ error: 'All fields required' });
+  if (!studentId || !examId || !subject || score == null) return res.status(400).json({ error: 'All fields required' });
 
   try {
-    await pool.query(
-      'INSERT INTO results (student_id, exam_id, subject, score) VALUES (?, ?, ?, ?)',
-      [studentId, examId, subject, score]
-    );
-
+    await pool.query('INSERT INTO results (student_id, exam_id, subject, score) VALUES (?, ?, ?, ?)', [studentId, examId, subject, score]);
     res.json({ ok: true });
   } catch (err) {
     console.error('Error adding result:', err);
@@ -188,33 +170,19 @@ app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
 
 // ======== PARENT LOGIN ========
 app.post('/api/parent/login', async (req, res) => {
-  console.log('🟡 Parent login attempt:', req.body);
   const { studentId, pin } = req.body;
-
-  if (!studentId || !pin)
-    return res.status(400).json({ error: 'studentId and pin required' });
+  if (!studentId || !pin) return res.status(400).json({ error: 'studentId and pin required' });
 
   try {
     const [rows] = await pool.query('SELECT * FROM students WHERE id = ?', [studentId]);
     const student = rows[0];
-
-    if (!student) {
-      console.log('⛔ No such student:', studentId);
-      return res.status(401).json({ error: 'invalid credentials' });
-    }
+    if (!student) return res.status(401).json({ error: 'invalid credentials' });
 
     const match = await bcrypt.compare(String(pin), student.pin_hash);
-    console.log('Pin match result:', match);
-
-    if (!match) {
-      console.log('⛔ Wrong PIN for student', studentId);
-      return res.status(401).json({ error: 'invalid credentials' });
-    }
+    if (!match) return res.status(401).json({ error: 'invalid credentials' });
 
     const token = jwt.sign({ studentId: student.id }, JWT_SECRET, { expiresIn: '12h' });
-    console.log('✅ Parent login success for', studentId);
     res.json({ token });
-
   } catch (err) {
     console.error('Parent login error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -226,39 +194,27 @@ app.get('/api/parent/me', verifyParentToken, async (req, res) => {
   const sid = req.studentId;
 
   try {
-    const [students] = await pool.query(
-      'SELECT id, name, school, form FROM students WHERE id = ?',
-      [sid]
-    );
+    const [students] = await pool.query('SELECT id, name, school, form FROM students WHERE id = ?', [sid]);
     const student = students[0];
-
     if (!student) return res.status(404).json({ error: 'student not found' });
 
     const [exams] = await pool.query('SELECT * FROM exams ORDER BY year DESC, term DESC');
 
     const resultsData = {};
     for (const exam of exams) {
-      const [rows] = await pool.query(
-        'SELECT student_id, subject, score FROM results WHERE exam_id = ?',
-        [exam.id]
-      );
+      const [rows] = await pool.query('SELECT student_id, subject, score FROM results WHERE exam_id = ?', [exam.id]);
 
       const scoresByStudent = {};
-      rows.forEach(r => {
-        if (!scoresByStudent[r.student_id]) scoresByStudent[r.student_id] = 0;
-        scoresByStudent[r.student_id] += r.score;
-      });
+      rows.forEach(r => { scoresByStudent[r.student_id] = (scoresByStudent[r.student_id] || 0) + r.score });
 
       const sorted = Object.entries(scoresByStudent).sort((a, b) => b[1] - a[1]);
       const positions = {};
-      sorted.forEach(([studId, total], idx) => (positions[studId] = idx + 1));
+      sorted.forEach(([studId], idx) => (positions[studId] = idx + 1));
 
-      const studentResults = rows
-        .filter(r => r.student_id === sid)
-        .reduce((acc, r) => {
-          acc[r.subject] = r.score;
-          return acc;
-        }, {});
+      const studentResults = rows.filter(r => r.student_id === sid).reduce((acc, r) => {
+        acc[r.subject] = r.score;
+        return acc;
+      }, {});
 
       resultsData[exam.id] = {
         examName: exam.name,
@@ -271,10 +227,20 @@ app.get('/api/parent/me', verifyParentToken, async (req, res) => {
     }
 
     res.json({ student, results: resultsData });
-
   } catch (err) {
     console.error('Error fetching parent results:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ======== ADMIN: FETCH ALL STUDENTS (ALPHABETICAL) ========
+app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
+  try {
+    const [students] = await pool.query('SELECT id, name, school, form FROM students ORDER BY name ASC');
+    res.json({ ok: true, students });
+  } catch (err) {
+    console.error('Error fetching students:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
