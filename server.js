@@ -1,271 +1,163 @@
-// ======== IMPORTS & SETUP ========
+require('dotenv').config();
 const express = require('express');
-const bodyParser = require('body-parser');
+const mysql = require('mysql2/promise');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
-const helmet = require('helmet');
-require('dotenv').config();
 
-const pool = require('./db'); // <-- MySQL connection
-const JWT_SECRET = process.env.JWT_SECRET || 'please_change_this_secret';
-const PORT = process.env.PORT || 5000;
-
-// ======== TOKEN VERIFICATION ========
-async function verifyAdminToken(req, res, next) {
-  const auth = req.headers.authorization;
-  if (!auth) return res.status(401).json({ error: 'Missing Authorization header' });
-
-  const parts = auth.split(' ');
-  if (parts.length !== 2 || parts[0] !== 'Bearer')
-    return res.status(401).json({ error: 'Invalid Authorization format' });
-
-  try {
-    const payload = jwt.verify(parts[1], JWT_SECRET);
-    req.admin = payload;
-    next();
-  } catch (err) {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
-}
-
-async function verifyParentToken(req, res, next) {
-  const auth = req.headers.authorization;
-  if (!auth) return res.status(401).json({ error: 'Missing Authorization header' });
-
-  const parts = auth.split(' ');
-  if (parts.length !== 2 || parts[0] !== 'Bearer')
-    return res.status(401).json({ error: 'Invalid Authorization format' });
-
-  try {
-    const payload = jwt.verify(parts[1], JWT_SECRET);
-    if (!payload.studentId)
-      return res.status(401).json({ error: 'Invalid parent token' });
-
-    req.studentId = payload.studentId;
-    next();
-  } catch (err) {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
-}
-
-// ======== EXPRESS APP ========
 const app = express();
-app.use(helmet());
-app.use(cors({
-  origin: [
-    'https://atielschools.com',
-    'http://localhost:3000'
-  ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
-app.use(bodyParser.json());
+app.use(cors());
+app.use(express.json());
 
-// ======== TEST ROUTE ========
-app.get('/api/ping', (req, res) => res.json({ ok: true, time: new Date() }));
-
-// ======== ADMIN LOGIN ========
-app.post('/api/admin/login', async (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password)
-    return res.status(400).json({ error: 'username and password required' });
-
-  try {
-    const [rows] = await pool.query('SELECT * FROM admins WHERE username = ?', [username]);
-    const admin = rows[0];
-    if (!admin) return res.status(401).json({ error: 'invalid credentials' });
-
-    const match = await bcrypt.compare(password, admin.password_hash);
-    if (!match) return res.status(401).json({ error: 'invalid credentials' });
-
-    const token = jwt.sign(
-      { adminId: admin.id, username: admin.username, role: 'admin' },
-      JWT_SECRET,
-      { expiresIn: '12h' }
-    );
-
-    res.json({ token });
-  } catch (err) {
-    console.error('Admin login error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+// ================= DATABASE =================
+const pool = mysql.createPool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  waitForConnections: true,
+  connectionLimit: 10
 });
 
-// ======== ADMIN: ADD STUDENT ========
-app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
-  const { name, school, form, pin } = req.body;
-  if (!name || !school || !form || !pin)
-    return res.status(400).json({ error: 'All fields required' });
+// ================= MIDDLEWARE =================
+const verifyAdminToken = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
 
   try {
-    // Auto-generate ID based on school
-    const prefix = school === 'girls' ? 'AG' : 'AB';
-    const [lastRow] = await pool.query('SELECT id FROM students WHERE id LIKE ? ORDER BY id DESC LIMIT 1', [`${prefix}-%`]);
-    let nextNumber = 1001;
-    if (lastRow.length > 0) {
-      const lastId = lastRow[0].id;
-      const lastNum = parseInt(lastId.split('-')[1], 10);
-      nextNumber = lastNum + 1;
-    }
-    const id = `${prefix}-${nextNumber}`;
+    req.admin = jwt.verify(token, process.env.JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid token' });
+  }
+};
 
+// ================= UTILITIES =================
+const generateStudentId = async (school) => {
+  const prefix = school === 'girls' ? 'AG' : 'AB';
+
+  const [rows] = await pool.query(
+    'SELECT id FROM students WHERE id LIKE ? ORDER BY id DESC LIMIT 1',
+    [`${prefix}-%`]
+  );
+
+  let next = 1001;
+  if (rows.length) {
+    next = parseInt(rows[0].id.split('-')[1], 10) + 1;
+  }
+  return `${prefix}-${next}`;
+};
+
+// ================= ADMIN AUTH =================
+app.post('/api/admin/login', async (req, res) => {
+  const { username, password } = req.body;
+  const [rows] = await pool.query('SELECT * FROM admins WHERE username = ?', [username]);
+  if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
+
+  const admin = rows[0];
+  const match = await bcrypt.compare(password, admin.password_hash);
+  if (!match) return res.status(401).json({ error: 'Invalid credentials' });
+
+  const token = jwt.sign({ id: admin.id }, process.env.JWT_SECRET, { expiresIn: '8h' });
+  res.json({ token });
+});
+
+// ================= STUDENTS =================
+app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
+  const { name, school, form, pin } = req.body;
+  if (!name || !school || !form || !pin) return res.status(400).json({ error: 'All fields required' });
+
+  try {
+    const id = await generateStudentId(school);
     const pinHash = await bcrypt.hash(String(pin), 10);
     await pool.query(
       'INSERT INTO students (id, name, school, form, pin_hash) VALUES (?, ?, ?, ?, ?)',
       [id, name, school, form, pinHash]
     );
-
-    res.json({ ok: true, message: 'Student added', studentId: id });
+    res.json({ message: 'Student added', studentId: id });
   } catch (err) {
-    console.error('Error adding student:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error(err);
+    res.status(500).json({ error: 'Error adding student' });
   }
 });
 
-// ======== ADMIN: GET ALL STUDENTS ========
 app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
-  try {
-    const [rows] = await pool.query('SELECT id, name, school, form FROM students ORDER BY name ASC');
-    res.json({ students: rows });
-  } catch (err) {
-    console.error('Error fetching students:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  const [rows] = await pool.query('SELECT id, name, school, form FROM students ORDER BY name ASC');
+  res.json(rows);
 });
 
-// ======== ADMIN: RESET STUDENT PIN ========
-app.put('/api/admin/students/reset-pin', verifyAdminToken, async (req, res) => {
-  const { studentId, newPin } = req.body;
-  if (!studentId || !newPin)
-    return res.status(400).json({ error: 'studentId and newPin required' });
-
-  try {
-    const hashedPin = await bcrypt.hash(String(newPin), 10);
-    await pool.query('UPDATE students SET pin_hash = ? WHERE id = ?', [hashedPin, studentId]);
-    res.json({ ok: true, message: `PIN reset for ${studentId}` });
-  } catch (err) {
-    console.error('Error resetting PIN:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// ======== ADMIN: ADD EXAM ========
+// ================= EXAMS =================
 app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
-  const { name, year, term } = req.body;
-  if (!name || !year || !term)
-    return res.status(400).json({ error: 'All fields required' });
-
-  try {
-    const [result] = await pool.query('INSERT INTO exams (name, year, term) VALUES (?, ?, ?)', [name, year, term]);
-    res.json({ ok: true, examId: result.insertId });
-  } catch (err) {
-    console.error('Error adding exam:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  const { name, term, year } = req.body;
+  await pool.query('INSERT INTO exams (name, term, year) VALUES (?, ?, ?)', [name, term, year]);
+  res.json({ message: 'Exam created' });
 });
 
-// ======== ADMIN: GET ALL EXAMS ========
 app.get('/api/admin/exams', verifyAdminToken, async (req, res) => {
-  try {
-    const [rows] = await pool.query('SELECT * FROM exams ORDER BY year DESC, term DESC');
-    res.json({ exams: rows });
-  } catch (err) {
-    console.error('Error fetching exams:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  const [rows] = await pool.query('SELECT * FROM exams ORDER BY year DESC, term ASC');
+  res.json(rows);
 });
 
-// ======== ADMIN: ADD RESULT ========
+// ================= RESULTS =================
 app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
-  const { student_id, exam_id, subject, score } = req.body;
-  if (!student_id || !exam_id || !subject || score == null)
-    return res.status(400).json({ error: 'All fields required' });
+  const { student_id, exam_id, subject, ca = 0, midterm = 0, endterm = 0, term = 1 } = req.body;
+  if (!student_id || !exam_id || !subject) return res.status(400).json({ error: 'Missing fields' });
 
   try {
     await pool.query(
-      'INSERT INTO results (student_id, exam_id, subject, score) VALUES (?, ?, ?, ?)',
-      [student_id, exam_id, subject, score]
+      `
+      INSERT INTO results (student_id, exam_id, subject, ca, midterm, endterm, term)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        ca = VALUES(ca),
+        midterm = VALUES(midterm),
+        endterm = VALUES(endterm),
+        term = VALUES(term)
+      `,
+      [student_id, exam_id, subject, ca, midterm, endterm, term]
     );
-    res.json({ ok: true, message: 'Grade saved successfully' });
+    res.json({ message: 'Result saved' });
   } catch (err) {
-    console.error('Error adding result:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error(err);
+    res.status(500).json({ error: 'Error saving result' });
   }
 });
 
-// ======== PARENT LOGIN ========
+app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
+  const { student_id, exam_id } = req.query;
+  let sql = `
+    SELECT r.*, s.name AS student_name, e.name AS exam_name, e.year, e.term AS exam_term
+    FROM results r
+    JOIN students s ON s.id = r.student_id
+    JOIN exams e ON e.id = r.exam_id
+    WHERE 1=1
+  `;
+  const params = [];
+  if (student_id) { sql += ' AND r.student_id = ?'; params.push(student_id); }
+  if (exam_id) { sql += ' AND r.exam_id = ?'; params.push(exam_id); }
+  sql += ' ORDER BY s.name ASC, r.subject ASC';
+  const [rows] = await pool.query(sql, params);
+  res.json(rows);
+});
+
+// ================= PARENT LOGIN =================
 app.post('/api/parent/login', async (req, res) => {
   const { studentId, pin } = req.body;
-  if (!studentId || !pin) return res.status(400).json({ error: 'studentId and pin required' });
+  const [rows] = await pool.query('SELECT * FROM students WHERE id = ?', [studentId]);
+  if (!rows.length) return res.status(401).json({ error: 'Invalid login' });
 
-  try {
-    const [rows] = await pool.query('SELECT * FROM students WHERE id = ?', [studentId]);
-    const student = rows[0];
-    if (!student) return res.status(401).json({ error: 'invalid credentials' });
+  const student = rows[0];
+  const match = await bcrypt.compare(String(pin), student.pin_hash);
+  if (!match) return res.status(401).json({ error: 'Invalid login' });
 
-    const match = await bcrypt.compare(String(pin), student.pin_hash);
-    if (!match) return res.status(401).json({ error: 'invalid credentials' });
-
-    const token = jwt.sign({ studentId: student.id }, JWT_SECRET, { expiresIn: '12h' });
-    res.json({ token });
-  } catch (err) {
-    console.error('Parent login error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  res.json({
+    id: student.id,
+    name: student.name,
+    form: student.form,
+    school: student.school
+  });
 });
 
-// ======== PARENT: FETCH RESULTS ========
-app.get('/api/parent/me', verifyParentToken, async (req, res) => {
-  const sid = req.studentId;
-
-  try {
-    const [students] = await pool.query('SELECT id, name, school, form FROM students WHERE id = ?', [sid]);
-    const student = students[0];
-    if (!student) return res.status(404).json({ error: 'student not found' });
-
-    const [exams] = await pool.query('SELECT * FROM exams ORDER BY year DESC, term DESC');
-
-    const resultsData = {};
-    for (const exam of exams) {
-      const [rows] = await pool.query('SELECT student_id, subject, score FROM results WHERE exam_id = ?', [exam.id]);
-
-      const scoresByStudent = {};
-      rows.forEach(r => {
-        if (!scoresByStudent[r.student_id]) scoresByStudent[r.student_id] = 0;
-        scoresByStudent[r.student_id] += r.score;
-      });
-
-      const sorted = Object.entries(scoresByStudent).sort((a, b) => b[1] - a[1]);
-      const positions = {};
-      sorted.forEach(([studId, total], idx) => (positions[studId] = idx + 1));
-
-      const studentResults = rows
-        .filter(r => r.student_id === sid)
-        .reduce((acc, r) => {
-          acc[r.subject] = r.score;
-          return acc;
-        }, {});
-
-      resultsData[exam.id] = {
-        examName: exam.name,
-        year: exam.year,
-        term: exam.term,
-        subjects: studentResults,
-        position: positions[sid],
-        totalStudents: sorted.length,
-      };
-    }
-
-    res.json({ student, results: resultsData });
-  } catch (err) {
-    console.error('Error fetching parent results:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// ======== START SERVER ========
-app.listen(PORT, () => {
-  console.log(`🚀 Atiel backend running on port ${PORT}`);
-});
+// ================= SERVER =================
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
