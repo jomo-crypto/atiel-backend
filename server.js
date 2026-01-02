@@ -12,7 +12,6 @@ app.use(cors({
     'http://localhost:3000'
   ]
 }));
-
 app.use(express.json());
 
 // ================= DATABASE =================
@@ -22,7 +21,7 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: 10, // adjust safely based on traffic
+  connectionLimit: 10,
   queueLimit: 0
 });
 
@@ -49,9 +48,7 @@ const generateStudentId = async (school) => {
       [`${prefix}-%`]
     );
     let next = 1001;
-    if (rows.length) {
-      next = parseInt(rows[0].id.split('-')[1], 10) + 1;
-    }
+    if (rows.length) next = parseInt(rows[0].id.split('-')[1]) + 1;
     return `${prefix}-${next}`;
   } finally {
     connection.release();
@@ -63,7 +60,10 @@ app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body;
   const connection = await pool.getConnection();
   try {
-    const [rows] = await connection.query('SELECT * FROM admins WHERE username = ?', [username]);
+    const [rows] = await connection.query(
+      'SELECT * FROM admins WHERE username = ?',
+      [username]
+    );
     if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
 
     const admin = rows[0];
@@ -80,30 +80,68 @@ app.post('/api/admin/login', async (req, res) => {
 // ================= STUDENTS =================
 app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
   const { name, school, form, pin } = req.body;
-  if (!name || !school || !form || !pin) return res.status(400).json({ error: 'All fields required' });
+  if (!name || !school || !form || !pin)
+    return res.status(400).json({ error: 'All fields required' });
 
   const connection = await pool.getConnection();
   try {
     const id = await generateStudentId(school);
     const pinHash = await bcrypt.hash(String(pin), 10);
+
     await connection.query(
       'INSERT INTO students (id, name, school, form, pin_hash) VALUES (?, ?, ?, ?, ?)',
       [id, name, school, form, pinHash]
     );
+
     res.json({ message: 'Student added', studentId: id });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error adding student' });
   } finally {
     connection.release();
   }
 });
 
+// 🔹 All students OR by form
 app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
+  const { form } = req.query;
   const connection = await pool.getConnection();
   try {
-    const [rows] = await connection.query('SELECT id, name, school, form FROM students ORDER BY name ASC');
+    const query = form
+      ? 'SELECT id, name, school, form FROM students WHERE form = ? ORDER BY name'
+      : 'SELECT id, name, school, form FROM students ORDER BY form, name';
+
+    const [rows] = await connection.query(query, form ? [form] : []);
     res.json(rows);
+  } finally {
+    connection.release();
+  }
+});
+
+// 🔹 Delete student
+app.delete('/api/admin/students/:id', verifyAdminToken, async (req, res) => {
+  const { id } = req.params;
+  const connection = await pool.getConnection();
+  try {
+    await connection.query('DELETE FROM results WHERE student_id = ?', [id]);
+    await connection.query('DELETE FROM students WHERE id = ?', [id]);
+    res.json({ message: 'Student deleted' });
+  } finally {
+    connection.release();
+  }
+});
+
+// 🔹 Regenerate PIN
+app.put('/api/admin/students/:id/pin', verifyAdminToken, async (req, res) => {
+  const { id } = req.params;
+  const { pin } = req.body;
+  if (!pin) return res.status(400).json({ error: 'PIN required' });
+
+  const hash = await bcrypt.hash(String(pin), 10);
+  const connection = await pool.getConnection();
+  try {
+    await connection.query(
+      'UPDATE students SET pin_hash = ? WHERE id = ?',
+      [hash, id]
+    );
+    res.json({ message: 'PIN regenerated' });
   } finally {
     connection.release();
   }
@@ -122,10 +160,8 @@ app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
     );
     res.json({ message: 'Exam created' });
   } catch (err) {
-    if (err.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ error: 'Exam for this term and year already exists' });
-    }
-    console.error(err);
+    if (err.code === 'ER_DUP_ENTRY')
+      return res.status(409).json({ error: 'Exam already exists' });
     res.status(500).json({ error: 'Error creating exam' });
   } finally {
     connection.release();
@@ -135,7 +171,9 @@ app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
 app.get('/api/admin/exams', verifyAdminToken, async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    const [rows] = await connection.query('SELECT * FROM exams ORDER BY year DESC, term ASC');
+    const [rows] = await connection.query(
+      'SELECT * FROM exams ORDER BY year DESC, term ASC'
+    );
     res.json(rows);
   } finally {
     connection.release();
@@ -145,7 +183,8 @@ app.get('/api/admin/exams', verifyAdminToken, async (req, res) => {
 // ================= RESULTS =================
 app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
   const { student_id, exam_id, subject, ca = 0, midterm = 0, endterm = 0 } = req.body;
-  if (!student_id || !exam_id || !subject) return res.status(400).json({ error: 'Missing fields' });
+  if (!student_id || !exam_id || !subject)
+    return res.status(400).json({ error: 'Missing fields' });
 
   const connection = await pool.getConnection();
   try {
@@ -166,64 +205,53 @@ app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
   }
 });
 
-app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
+// 🔹 Edit result
+app.put('/api/admin/results', verifyAdminToken, async (req, res) => {
+  const { student_id, exam_id, subject, ca = 0, midterm = 0, endterm = 0 } = req.body;
+
   const connection = await pool.getConnection();
   try {
-    const [rows] = await connection.query(`
-      SELECT 
-        r.student_id,
-        s.name AS student_name,
-        e.id AS exam_id,
-        e.name AS exam_name,
-        e.term,
-        e.year,
-        r.subject,
-        r.ca,
-        r.midterm,
-        r.endterm
-      FROM results r
-      JOIN students s ON s.id = r.student_id
-      JOIN exams e ON e.id = r.exam_id
-      ORDER BY e.year DESC, e.term ASC, s.name ASC, r.subject ASC
-    `);
-
-    // Transform data: group by student + exam
-    const grouped = {};
-    rows.forEach(r => {
-      const key = `${r.student_id}-${r.exam_id}`;
-      if (!grouped[key]) {
-        grouped[key] = {
-          student_id: r.student_id,
-          student_name: r.student_name,
-          exam_id: r.exam_id,
-          exam_name: r.exam_name,
-          term: r.term,
-          year: r.year,
-          subjects: []
-        };
-      }
-      grouped[key].subjects.push({
-        subject: r.subject,
-        ca: r.ca,
-        midterm: r.midterm,
-        endterm: r.endterm,
-        total: Number(r.ca) + Number(r.midterm) + Number(r.endterm)
-      });
-    });
-
-    res.json(Object.values(grouped));
+    await connection.query(
+      `
+      UPDATE results
+      SET ca = ?, midterm = ?, endterm = ?
+      WHERE student_id = ? AND exam_id = ? AND subject = ?
+      `,
+      [ca, midterm, endterm, student_id, exam_id, subject]
+    );
+    res.json({ message: 'Result updated' });
   } finally {
     connection.release();
   }
 });
 
+app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const [rows] = await connection.query(`
+      SELECT r.student_id, s.name, s.form,
+             e.id exam_id, e.name exam_name, e.term, e.year,
+             r.subject, r.ca, r.midterm, r.endterm
+      FROM results r
+      JOIN students s ON s.id = r.student_id
+      JOIN exams e ON e.id = r.exam_id
+      ORDER BY s.form, s.name, e.year DESC
+    `);
+    res.json(rows);
+  } finally {
+    connection.release();
+  }
+});
 
-// ================= PARENT LOGIN =================
+// ================= PARENT =================
 app.post('/api/parent/login', async (req, res) => {
   const { studentId, pin } = req.body;
   const connection = await pool.getConnection();
   try {
-    const [rows] = await connection.query('SELECT * FROM students WHERE id = ?', [studentId]);
+    const [rows] = await connection.query(
+      'SELECT * FROM students WHERE id = ?',
+      [studentId]
+    );
     if (!rows.length) return res.status(401).json({ error: 'Invalid login' });
 
     const student = rows[0];
@@ -242,23 +270,18 @@ app.post('/api/parent/login', async (req, res) => {
 });
 
 app.get('/api/parent/results/:studentId', async (req, res) => {
-  const { studentId } = req.params;
   const connection = await pool.getConnection();
   try {
     const [rows] = await connection.query(`
-      SELECT 
-        r.subject,
-        r.ca,
-        r.midterm,
-        r.endterm,
-        e.term,
-        e.year,
-        (r.ca + r.midterm + r.endterm) AS total
+      SELECT r.subject, r.ca, r.midterm, r.endterm,
+             e.term, e.year,
+             (r.ca + r.midterm + r.endterm) total
       FROM results r
       JOIN exams e ON e.id = r.exam_id
       WHERE r.student_id = ?
-      ORDER BY e.year DESC, e.term ASC, r.subject ASC
-    `, [studentId]);
+      ORDER BY e.year DESC, e.term ASC
+    `, [req.params.studentId]);
+
     res.json(rows);
   } finally {
     connection.release();
@@ -267,4 +290,6 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
 
 // ================= SERVER =================
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`✅ Server running on port ${PORT}`)
+);
