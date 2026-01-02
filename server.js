@@ -99,7 +99,7 @@ app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
   }
 });
 
-// 🔹 All students OR by form
+// 🔹 Get all students or by form
 app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
   const { form } = req.query;
   const connection = await pool.getConnection();
@@ -129,19 +129,18 @@ app.delete('/api/admin/students/:id', verifyAdminToken, async (req, res) => {
 });
 
 // 🔹 Regenerate PIN
-app.put('/api/admin/students/:id/pin', verifyAdminToken, async (req, res) => {
+app.post('/api/admin/students/:id/regenerate-pin', verifyAdminToken, async (req, res) => {
   const { id } = req.params;
-  const { pin } = req.body;
-  if (!pin) return res.status(400).json({ error: 'PIN required' });
+  const newPin = Math.floor(1000 + Math.random() * 9000); // 4-digit PIN
+  const pinHash = await bcrypt.hash(String(newPin), 10);
 
-  const hash = await bcrypt.hash(String(pin), 10);
   const connection = await pool.getConnection();
   try {
-    await connection.query(
-      'UPDATE students SET pin_hash = ? WHERE id = ?',
-      [hash, id]
-    );
-    res.json({ message: 'PIN regenerated' });
+    await connection.query('UPDATE students SET pin_hash = ? WHERE id = ?', [pinHash, id]);
+    res.json({ message: 'PIN regenerated', newPin });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to regenerate PIN' });
   } finally {
     connection.release();
   }
