@@ -25,11 +25,32 @@ const pool = mysql.createPool({
   queueLimit: 0
 });
 
+// ================= ENSURE TOTAL_SCORE & POSITION =================
+const ensureResultsColumns = async () => {
+  const connection = await pool.getConnection();
+  try {
+    // Check if columns exist
+    const [cols] = await connection.query(`SHOW COLUMNS FROM results LIKE 'total_score'`);
+    if (!cols.length) {
+      console.log('Adding total_score and position columns...');
+      await connection.query(`
+        ALTER TABLE results
+        ADD COLUMN total_score INT DEFAULT 0,
+        ADD COLUMN position INT DEFAULT NULL
+      `);
+    }
+  } finally {
+    connection.release();
+  }
+};
+
+// Call once at startup
+ensureResultsColumns().catch(err => console.error('Failed to ensure results columns:', err));
+
 // ================= MIDDLEWARE =================
 const verifyAdminToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
-
   try {
     req.admin = jwt.verify(token, process.env.JWT_SECRET);
     next();
@@ -60,16 +81,11 @@ app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body;
   const connection = await pool.getConnection();
   try {
-    const [rows] = await connection.query(
-      'SELECT * FROM admins WHERE username = ?',
-      [username]
-    );
+    const [rows] = await connection.query('SELECT * FROM admins WHERE username = ?', [username]);
     if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
-
     const admin = rows[0];
     const match = await bcrypt.compare(password, admin.password_hash);
     if (!match) return res.status(401).json({ error: 'Invalid credentials' });
-
     const token = jwt.sign({ id: admin.id }, process.env.JWT_SECRET, { expiresIn: '8h' });
     res.json({ token });
   } finally {
@@ -82,17 +98,14 @@ app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
   const { name, school, form, pin } = req.body;
   if (!name || !school || !form || !pin)
     return res.status(400).json({ error: 'All fields required' });
-
   const connection = await pool.getConnection();
   try {
     const id = await generateStudentId(school);
     const pinHash = await bcrypt.hash(String(pin), 10);
-
     await connection.query(
       'INSERT INTO students (id, name, school, form, pin_hash) VALUES (?, ?, ?, ?, ?)',
       [id, name, school, form, pinHash]
     );
-
     res.json({ message: 'Student added', studentId: id });
   } finally {
     connection.release();
@@ -106,7 +119,6 @@ app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
     const query = form
       ? 'SELECT id, name, school, form FROM students WHERE form = ? ORDER BY name'
       : 'SELECT id, name, school, form FROM students ORDER BY form, name';
-
     const [rows] = await connection.query(query, form ? [form] : []);
     res.json(rows);
   } finally {
@@ -130,7 +142,6 @@ app.post('/api/admin/students/:id/regenerate-pin', verifyAdminToken, async (req,
   const { id } = req.params;
   const newPin = Math.floor(1000 + Math.random() * 9000);
   const pinHash = await bcrypt.hash(String(newPin), 10);
-
   const connection = await pool.getConnection();
   try {
     await connection.query('UPDATE students SET pin_hash = ? WHERE id = ?', [pinHash, id]);
@@ -144,7 +155,6 @@ app.post('/api/admin/students/:id/regenerate-pin', verifyAdminToken, async (req,
 app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
   const { name, term, year } = req.body;
   if (!name || !term || !year) return res.status(400).json({ error: 'Missing fields' });
-
   const connection = await pool.getConnection();
   try {
     await connection.query('INSERT INTO exams (name, term, year) VALUES (?, ?, ?)', [name, term, year]);
@@ -184,6 +194,9 @@ app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
 
   const connection = await pool.getConnection();
   try {
+    // ensure columns exist
+    await ensureResultsColumns();
+
     const [examRows] = await connection.query('SELECT term, year FROM exams WHERE id = ?', [exam_id]);
     const exam = examRows[0];
 
@@ -205,7 +218,7 @@ app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
 
     // compute totals & positions
     const [totals] = await connection.query(`
-      SELECT student_id, SUM(ca+midterm+endterm) total
+      SELECT student_id, SUM(ca+midterm+endterm) AS total
       FROM results
       WHERE exam_id = ?
       GROUP BY student_id
@@ -234,15 +247,12 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
 
   const connection = await pool.getConnection();
   try {
-    let examId, examTerm, examYear;
+    await ensureResultsColumns(); // ensure columns exist
 
+    let examId, examTerm, examYear;
     for (let r of results) {
       const { studentId, subject, score, term, year } = r;
-
-      const [examRows] = await connection.query(
-        'SELECT id, term, year FROM exams WHERE term = ? AND year = ? LIMIT 1',
-        [term, year]
-      );
+      const [examRows] = await connection.query('SELECT id, term, year FROM exams WHERE term = ? AND year = ? LIMIT 1', [term, year]);
       if (examRows.length) {
         examId = examRows[0].id;
         examTerm = examRows[0].term;
@@ -274,6 +284,7 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
       );
     }
 
+    // compute totals & positions
     const [totals] = await connection.query(`
       SELECT student_id, SUM(ca + midterm + endterm) AS total
       FROM results
@@ -302,6 +313,8 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
   const { form, term, year } = req.query;
   const connection = await pool.getConnection();
   try {
+    await ensureResultsColumns();
+
     let query = `
       SELECT r.student_id, s.name, s.form,
              e.id exam_id, e.name exam_name, e.term, e.year,
@@ -321,7 +334,6 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
     }
 
     query += ' ORDER BY s.name, r.total_score DESC';
-
     const [rows] = await connection.query(query, params);
     res.json(rows);
   } finally {
@@ -336,17 +348,10 @@ app.post('/api/parent/login', async (req, res) => {
   try {
     const [rows] = await connection.query('SELECT * FROM students WHERE id = ?', [studentId]);
     if (!rows.length) return res.status(401).json({ error: 'Invalid login' });
-
     const student = rows[0];
     const match = await bcrypt.compare(String(pin), student.pin_hash);
     if (!match) return res.status(401).json({ error: 'Invalid login' });
-
-    res.json({
-      id: student.id,
-      name: student.name,
-      form: student.form,
-      school: student.school
-    });
+    res.json({ id: student.id, name: student.name, form: student.form, school: student.school });
   } finally {
     connection.release();
   }
@@ -355,6 +360,8 @@ app.post('/api/parent/login', async (req, res) => {
 app.get('/api/parent/results/:studentId', async (req, res) => {
   const connection = await pool.getConnection();
   try {
+    await ensureResultsColumns();
+
     const [rows] = await connection.query(`
       SELECT r.subject, r.ca, r.midterm, r.endterm,
              e.term, e.year,
