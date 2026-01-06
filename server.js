@@ -99,7 +99,6 @@ app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
   }
 });
 
-// 🔹 Get all students or by form
 app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
   const { form } = req.query;
   const connection = await pool.getConnection();
@@ -115,7 +114,6 @@ app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
   }
 });
 
-// 🔹 Delete student
 app.delete('/api/admin/students/:id', verifyAdminToken, async (req, res) => {
   const { id } = req.params;
   const connection = await pool.getConnection();
@@ -128,10 +126,9 @@ app.delete('/api/admin/students/:id', verifyAdminToken, async (req, res) => {
   }
 });
 
-// 🔹 Regenerate PIN
 app.post('/api/admin/students/:id/regenerate-pin', verifyAdminToken, async (req, res) => {
   const { id } = req.params;
-  const newPin = Math.floor(1000 + Math.random() * 9000); // 4-digit PIN
+  const newPin = Math.floor(1000 + Math.random() * 9000);
   const pinHash = await bcrypt.hash(String(newPin), 10);
 
   const connection = await pool.getConnection();
@@ -150,10 +147,7 @@ app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
 
   const connection = await pool.getConnection();
   try {
-    await connection.query(
-      'INSERT INTO exams (name, term, year) VALUES (?, ?, ?)',
-      [name, term, year]
-    );
+    await connection.query('INSERT INTO exams (name, term, year) VALUES (?, ?, ?)', [name, term, year]);
     res.json({ message: 'Exam created' });
   } finally {
     connection.release();
@@ -163,9 +157,7 @@ app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
 app.get('/api/admin/exams', verifyAdminToken, async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    const [rows] = await connection.query(
-      'SELECT * FROM exams ORDER BY year DESC, term ASC'
-    );
+    const [rows] = await connection.query('SELECT * FROM exams ORDER BY year DESC, term ASC');
     res.json(rows);
   } finally {
     connection.release();
@@ -185,18 +177,16 @@ app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
 });
 
 // ================= RESULTS =================
-// Save single result (with locking, totals, positions)
+// Save single result
 app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
   const { student_id, exam_id, subject, ca = 0, midterm = 0, endterm = 0, form } = req.body;
-  if (!student_id || !exam_id || !subject)
-    return res.status(400).json({ error: 'Missing fields' });
+  if (!student_id || !exam_id || !subject) return res.status(400).json({ error: 'Missing fields' });
 
   const connection = await pool.getConnection();
   try {
     const [examRows] = await connection.query('SELECT term, year FROM exams WHERE id = ?', [exam_id]);
     const exam = examRows[0];
 
-    // Check if results are locked
     const [lockRows] = await connection.query(
       'SELECT * FROM result_locks WHERE form = ? AND term = ? AND year = ?',
       [form, exam.term, exam.year]
@@ -213,7 +203,7 @@ app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
       [student_id, exam_id, subject, ca, midterm, endterm]
     );
 
-    // Compute total and positions
+    // compute totals & positions
     const [totals] = await connection.query(`
       SELECT student_id, SUM(ca+midterm+endterm) total
       FROM results
@@ -237,41 +227,45 @@ app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
   }
 });
 
-// 🔹 Bulk save results (used by StudentsByClass)
+// Bulk save results
 app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
-  const results = req.body; // array of {studentId, subject, score, term, year, examName?}
+  const results = req.body;
   if (!Array.isArray(results) || results.length === 0) return res.status(400).json({ error: 'No results provided' });
 
   const connection = await pool.getConnection();
   try {
+    let examId, examTerm, examYear;
+
     for (let r of results) {
       const { studentId, subject, score, term, year } = r;
 
-      // Find exam for term & year (create if not exist)
       const [examRows] = await connection.query(
-        'SELECT id FROM exams WHERE term = ? AND year = ? LIMIT 1',
+        'SELECT id, term, year FROM exams WHERE term = ? AND year = ? LIMIT 1',
         [term, year]
       );
-      let examId;
-      if (examRows.length) examId = examRows[0].id;
-      else {
+      if (examRows.length) {
+        examId = examRows[0].id;
+        examTerm = examRows[0].term;
+        examYear = examRows[0].year;
+      } else {
         const [insertRes] = await connection.query(
           'INSERT INTO exams (name, term, year) VALUES (?, ?, ?)',
           [`${term} ${year}`, term, year]
         );
         examId = insertRes.insertId;
+        examTerm = term;
+        examYear = year;
       }
 
-      // Check if results locked
       const [studentRows] = await connection.query('SELECT form FROM students WHERE id = ?', [studentId]);
       const form = studentRows[0].form;
+
       const [lockRows] = await connection.query(
         'SELECT * FROM result_locks WHERE form = ? AND term = ? AND year = ?',
         [form, term, year]
       );
-      if (lockRows.length) continue; // skip locked
+      if (lockRows.length) continue;
 
-      // Insert or update result
       await connection.query(
         `INSERT INTO results (student_id, exam_id, subject, ca)
          VALUES (?, ?, ?, ?)
@@ -280,16 +274,35 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
       );
     }
 
-    res.json({ message: 'Bulk results saved' });
+    const [totals] = await connection.query(`
+      SELECT student_id, SUM(ca + midterm + endterm) AS total
+      FROM results
+      WHERE exam_id = ?
+      GROUP BY student_id
+      ORDER BY total DESC
+    `, [examId]);
+
+    let position = 1;
+    for (let t of totals) {
+      await connection.query(
+        'UPDATE results SET total_score = ?, position = ? WHERE student_id = ? AND exam_id = ?',
+        [t.total, position, t.student_id, examId]
+      );
+      position++;
+    }
+
+    res.json({ message: 'Bulk results saved with totals and positions' });
   } finally {
     connection.release();
   }
 });
 
+// 🔹 UPDATED: Fetch results filtered by form, term, year
 app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
+  const { form, term, year } = req.query;
   const connection = await pool.getConnection();
   try {
-    const [rows] = await connection.query(`
+    let query = `
       SELECT r.student_id, s.name, s.form,
              e.id exam_id, e.name exam_name, e.term, e.year,
              r.subject, r.ca, r.midterm, r.endterm,
@@ -297,8 +310,19 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
       FROM results r
       JOIN students s ON s.id = r.student_id
       JOIN exams e ON e.id = r.exam_id
-      ORDER BY s.form, s.name, e.year DESC
-    `);
+    `;
+    const params = [];
+
+    if (form || term || year) {
+      query += ' WHERE 1=1';
+      if (form) { query += ' AND s.form = ?'; params.push(form); }
+      if (term) { query += ' AND e.term = ?'; params.push(term); }
+      if (year) { query += ' AND e.year = ?'; params.push(year); }
+    }
+
+    query += ' ORDER BY s.name, r.total_score DESC';
+
+    const [rows] = await connection.query(query, params);
     res.json(rows);
   } finally {
     connection.release();
@@ -310,10 +334,7 @@ app.post('/api/parent/login', async (req, res) => {
   const { studentId, pin } = req.body;
   const connection = await pool.getConnection();
   try {
-    const [rows] = await connection.query(
-      'SELECT * FROM students WHERE id = ?',
-      [studentId]
-    );
+    const [rows] = await connection.query('SELECT * FROM students WHERE id = ?', [studentId]);
     if (!rows.length) return res.status(401).json({ error: 'Invalid login' });
 
     const student = rows[0];
@@ -337,7 +358,7 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
     const [rows] = await connection.query(`
       SELECT r.subject, r.ca, r.midterm, r.endterm,
              e.term, e.year,
-             (r.ca + r.midterm + r.endterm) total
+             r.total_score AS total
       FROM results r
       JOIN exams e ON e.id = r.exam_id
       WHERE r.student_id = ?
