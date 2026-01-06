@@ -7,10 +7,7 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors({
-  origin: [
-    'https://atielschools.com',
-    'http://localhost:3000'
-  ]
+  origin: ['https://atielschools.com', 'http://localhost:3000']
 }));
 app.use(express.json());
 
@@ -21,8 +18,7 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
+  connectionLimit: 10
 });
 
 // ================= MIDDLEWARE =================
@@ -38,109 +34,18 @@ const verifyAdminToken = (req, res, next) => {
   }
 };
 
-// ================= UTILITIES =================
-const generateStudentId = async (school) => {
-  const prefix = school === 'girls' ? 'AG' : 'AB';
-  const connection = await pool.getConnection();
-  try {
-    const [rows] = await connection.query(
-      'SELECT id FROM students WHERE id LIKE ? ORDER BY id DESC LIMIT 1',
-      [`${prefix}-%`]
-    );
-    let next = 1001;
-    if (rows.length) next = parseInt(rows[0].id.split('-')[1]) + 1;
-    return `${prefix}-${next}`;
-  } finally {
-    connection.release();
-  }
-};
-
-// ================= ADMIN AUTH =================
-app.post('/api/admin/login', async (req, res) => {
-  const { username, password } = req.body;
-  const connection = await pool.getConnection();
-  try {
-    const [rows] = await connection.query(
-      'SELECT * FROM admins WHERE username = ?',
-      [username]
-    );
-    if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
-
-    const admin = rows[0];
-    const match = await bcrypt.compare(password, admin.password_hash);
-    if (!match) return res.status(401).json({ error: 'Invalid credentials' });
-
-    const token = jwt.sign({ id: admin.id }, process.env.JWT_SECRET, { expiresIn: '8h' });
-    res.json({ token });
-  } finally {
-    connection.release();
-  }
-});
-
 // ================= STUDENTS =================
-app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
-  const { name, school, form, pin } = req.body;
-  if (!name || !school || !form || !pin)
-    return res.status(400).json({ error: 'All fields required' });
-
-  const connection = await pool.getConnection();
-  try {
-    const id = await generateStudentId(school);
-    const pinHash = await bcrypt.hash(String(pin), 10);
-
-    await connection.query(
-      'INSERT INTO students (id, name, school, form, pin_hash) VALUES (?, ?, ?, ?, ?)',
-      [id, name, school, form, pinHash]
-    );
-
-    res.json({ message: 'Student added', studentId: id });
-  } finally {
-    connection.release();
-  }
-});
-
-// 🔹 Get all students or by form
 app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
   const { form } = req.query;
   const connection = await pool.getConnection();
   try {
-    const query = form
-      ? 'SELECT id, name, school, form FROM students WHERE form = ? ORDER BY name'
-      : 'SELECT id, name, school, form FROM students ORDER BY form, name';
-
-    const [rows] = await connection.query(query, form ? [form] : []);
+    const [rows] = await connection.query(
+      form
+        ? 'SELECT id, name, form FROM students WHERE form = ? ORDER BY name'
+        : 'SELECT id, name, form FROM students ORDER BY form, name',
+      form ? [form] : []
+    );
     res.json(rows);
-  } finally {
-    connection.release();
-  }
-});
-
-// 🔹 Delete student
-app.delete('/api/admin/students/:id', verifyAdminToken, async (req, res) => {
-  const { id } = req.params;
-  const connection = await pool.getConnection();
-  try {
-    await connection.query('DELETE FROM results WHERE student_id = ?', [id]);
-    await connection.query('DELETE FROM students WHERE id = ?', [id]);
-    res.json({ message: 'Student deleted' });
-  } finally {
-    connection.release();
-  }
-});
-
-// 🔹 Regenerate PIN
-app.post('/api/admin/students/:id/regenerate-pin', verifyAdminToken, async (req, res) => {
-  const { id } = req.params;
-  const newPin = Math.floor(1000 + Math.random() * 9000); // 4-digit PIN
-  const pinHash = await bcrypt.hash(String(newPin), 10);
-
-  const connection = await pool.getConnection();
-  try {
-    await connection.query('UPDATE students SET pin_hash = ? WHERE id = ?', [pinHash, id]);
-    res.json({ message: 'PIN regenerated', newPin });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to regenerate PIN' });
   } finally {
     connection.release();
   }
@@ -149,8 +54,6 @@ app.post('/api/admin/students/:id/regenerate-pin', verifyAdminToken, async (req,
 // ================= EXAMS =================
 app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
   const { name, term, year } = req.body;
-  if (!name || !term || !year) return res.status(400).json({ error: 'Missing fields' });
-
   const connection = await pool.getConnection();
   try {
     await connection.query(
@@ -158,123 +61,101 @@ app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
       [name, term, year]
     );
     res.json({ message: 'Exam created' });
-  } catch (err) {
-    if (err.code === 'ER_DUP_ENTRY')
-      return res.status(409).json({ error: 'Exam already exists' });
-    res.status(500).json({ error: 'Error creating exam' });
   } finally {
     connection.release();
   }
 });
 
-app.get('/api/admin/exams', verifyAdminToken, async (req, res) => {
-  const connection = await pool.getConnection();
-  try {
-    const [rows] = await connection.query(
-      'SELECT * FROM exams ORDER BY year DESC, term ASC'
-    );
-    res.json(rows);
-  } finally {
-    connection.release();
-  }
-});
-
-// ================= RESULTS =================
-app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
-  const { student_id, exam_id, subject, ca = 0, midterm = 0, endterm = 0 } = req.body;
-  if (!student_id || !exam_id || !subject)
-    return res.status(400).json({ error: 'Missing fields' });
-
+app.post('/api/admin/exams/:id/lock', verifyAdminToken, async (req, res) => {
   const connection = await pool.getConnection();
   try {
     await connection.query(
-      `
+      'UPDATE exams SET locked = TRUE WHERE id = ?',
+      [req.params.id]
+    );
+    res.json({ message: 'Results locked' });
+  } finally {
+    connection.release();
+  }
+});
+
+// ================= RESULTS (WRITE-PROTECTED) =================
+const checkExamUnlocked = async (exam_id) => {
+  const [rows] = await pool.query(
+    'SELECT locked FROM exams WHERE id = ?',
+    [exam_id]
+  );
+  return rows.length && !rows[0].locked;
+};
+
+app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
+  const { student_id, exam_id, subject, ca = 0, midterm = 0, endterm = 0 } = req.body;
+
+  if (!(await checkExamUnlocked(exam_id)))
+    return res.status(403).json({ error: 'Results locked for this exam' });
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.query(`
       INSERT INTO results (student_id, exam_id, subject, ca, midterm, endterm)
       VALUES (?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         ca = VALUES(ca),
         midterm = VALUES(midterm),
         endterm = VALUES(endterm)
-      `,
-      [student_id, exam_id, subject, ca, midterm, endterm]
-    );
+    `, [student_id, exam_id, subject, ca, midterm, endterm]);
+
     res.json({ message: 'Result saved' });
   } finally {
     connection.release();
   }
 });
 
-// 🔹 Edit result
-app.put('/api/admin/results', verifyAdminToken, async (req, res) => {
-  const { student_id, exam_id, subject, ca = 0, midterm = 0, endterm = 0 } = req.body;
+// ================= REPORT CARD (AVERAGES + POSITIONS) =================
+app.get('/api/admin/report-card', verifyAdminToken, async (req, res) => {
+  const { form, exam_id } = req.query;
+  if (!form || !exam_id)
+    return res.status(400).json({ error: 'Missing form or exam_id' });
 
-  const connection = await pool.getConnection();
-  try {
-    await connection.query(
-      `
-      UPDATE results
-      SET ca = ?, midterm = ?, endterm = ?
-      WHERE student_id = ? AND exam_id = ? AND subject = ?
-      `,
-      [ca, midterm, endterm, student_id, exam_id, subject]
-    );
-    res.json({ message: 'Result updated' });
-  } finally {
-    connection.release();
-  }
-});
-
-app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const [rows] = await connection.query(`
-      SELECT r.student_id, s.name, s.form,
-             e.id exam_id, e.name exam_name, e.term, e.year,
-             r.subject, r.ca, r.midterm, r.endterm
-      FROM results r
-      JOIN students s ON s.id = r.student_id
-      JOIN exams e ON e.id = r.exam_id
-      ORDER BY s.form, s.name, e.year DESC
-    `);
-    res.json(rows);
-  } finally {
-    connection.release();
-  }
-});
+      SELECT 
+        s.id,
+        s.name,
+        SUM(r.ca + r.midterm + r.endterm) total,
+        AVG(r.ca + r.midterm + r.endterm) average
+      FROM students s
+      JOIN results r ON r.student_id = s.id
+      WHERE s.form = ? AND r.exam_id = ?
+      GROUP BY s.id
+      ORDER BY total DESC
+    `, [form, exam_id]);
 
-// ================= PARENT =================
-app.post('/api/parent/login', async (req, res) => {
-  const { studentId, pin } = req.body;
-  const connection = await pool.getConnection();
-  try {
-    const [rows] = await connection.query(
-      'SELECT * FROM students WHERE id = ?',
-      [studentId]
-    );
-    if (!rows.length) return res.status(401).json({ error: 'Invalid login' });
+    let position = 0;
+    let lastTotal = null;
 
-    const student = rows[0];
-    const match = await bcrypt.compare(String(pin), student.pin_hash);
-    if (!match) return res.status(401).json({ error: 'Invalid login' });
-
-    res.json({
-      id: student.id,
-      name: student.name,
-      form: student.form,
-      school: student.school
+    const ranked = rows.map((r, index) => {
+      if (r.total !== lastTotal) position = index + 1;
+      lastTotal = r.total;
+      return { ...r, position };
     });
+
+    res.json(ranked);
   } finally {
     connection.release();
   }
 });
 
+// ================= PARENT RESULTS =================
 app.get('/api/parent/results/:studentId', async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const [rows] = await connection.query(`
-      SELECT r.subject, r.ca, r.midterm, r.endterm,
-             e.term, e.year,
-             (r.ca + r.midterm + r.endterm) total
+      SELECT r.subject,
+             r.ca, r.midterm, r.endterm,
+             (r.ca + r.midterm + r.endterm) total,
+             e.term, e.year
       FROM results r
       JOIN exams e ON e.id = r.exam_id
       WHERE r.student_id = ?
