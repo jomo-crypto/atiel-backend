@@ -174,7 +174,6 @@ app.get('/api/admin/exams', verifyAdminToken, async (req, res) => {
 
 // ================= SUBJECTS =================
 app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
-  // Return subjects based on form
   const { form } = req.query;
   const subjectsByForm = {
     'Form 1': ['AGR','ENG','BIO','CHEM','MATH','GEO','PHY','CHI','LIF','B/K','HIS','COMP','BUS.'],
@@ -186,20 +185,21 @@ app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
 });
 
 // ================= RESULTS =================
-// Add locking, averages, and positions
+// Save single result (with locking, totals, positions)
 app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
-  const { student_id, exam_id, subject, ca = 0, midterm = 0, endterm = 0 } = req.body;
+  const { student_id, exam_id, subject, ca = 0, midterm = 0, endterm = 0, form } = req.body;
   if (!student_id || !exam_id || !subject)
     return res.status(400).json({ error: 'Missing fields' });
 
   const connection = await pool.getConnection();
   try {
-    // Check if results for this student and term are locked
     const [examRows] = await connection.query('SELECT term, year FROM exams WHERE id = ?', [exam_id]);
     const exam = examRows[0];
+
+    // Check if results are locked
     const [lockRows] = await connection.query(
       'SELECT * FROM result_locks WHERE form = ? AND term = ? AND year = ?',
-      [req.body.form || 'Form 1', exam.term, exam.year]
+      [form, exam.term, exam.year]
     );
     if (lockRows.length) return res.status(403).json({ error: 'Results are locked for this term' });
 
@@ -213,7 +213,7 @@ app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
       [student_id, exam_id, subject, ca, midterm, endterm]
     );
 
-    // Compute total, average, and positions
+    // Compute total and positions
     const [totals] = await connection.query(`
       SELECT student_id, SUM(ca+midterm+endterm) total
       FROM results
@@ -225,13 +225,62 @@ app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
     let position = 1;
     for (let t of totals) {
       await connection.query(
-        'UPDATE results SET total_score = ? , position = ? WHERE student_id = ? AND exam_id = ?',
+        'UPDATE results SET total_score = ?, position = ? WHERE student_id = ? AND exam_id = ?',
         [t.total, position, t.student_id, exam_id]
       );
       position++;
     }
 
-    res.json({ message: 'Result saved with average and position' });
+    res.json({ message: 'Result saved with totals and positions' });
+  } finally {
+    connection.release();
+  }
+});
+
+// 🔹 Bulk save results (used by StudentsByClass)
+app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
+  const results = req.body; // array of {studentId, subject, score, term, year, examName?}
+  if (!Array.isArray(results) || results.length === 0) return res.status(400).json({ error: 'No results provided' });
+
+  const connection = await pool.getConnection();
+  try {
+    for (let r of results) {
+      const { studentId, subject, score, term, year } = r;
+
+      // Find exam for term & year (create if not exist)
+      const [examRows] = await connection.query(
+        'SELECT id FROM exams WHERE term = ? AND year = ? LIMIT 1',
+        [term, year]
+      );
+      let examId;
+      if (examRows.length) examId = examRows[0].id;
+      else {
+        const [insertRes] = await connection.query(
+          'INSERT INTO exams (name, term, year) VALUES (?, ?, ?)',
+          [`${term} ${year}`, term, year]
+        );
+        examId = insertRes.insertId;
+      }
+
+      // Check if results locked
+      const [studentRows] = await connection.query('SELECT form FROM students WHERE id = ?', [studentId]);
+      const form = studentRows[0].form;
+      const [lockRows] = await connection.query(
+        'SELECT * FROM result_locks WHERE form = ? AND term = ? AND year = ?',
+        [form, term, year]
+      );
+      if (lockRows.length) continue; // skip locked
+
+      // Insert or update result
+      await connection.query(
+        `INSERT INTO results (student_id, exam_id, subject, ca)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE ca = VALUES(ca)`,
+        [studentId, examId, subject, score]
+      );
+    }
+
+    res.json({ message: 'Bulk results saved' });
   } finally {
     connection.release();
   }
