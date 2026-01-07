@@ -12,6 +12,13 @@ app.use(cors({
     'http://localhost:3000'
   ]
 }));
+
+// ================= HEALTH CHECK =================
+app.get('/', (req, res) => {
+  res.status(200).send('OK');
+});
+
+
 app.use(express.json());
 
 // ================= DATABASE =================
