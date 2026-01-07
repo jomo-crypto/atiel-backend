@@ -17,12 +17,12 @@ app.use(cors({
   ]
 }));
 app.use(express.json());
+
 // Log every incoming request
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
   next();
 });
-
 
 // ================= DATABASE =================
 const pool = mysql.createPool({
@@ -244,7 +244,111 @@ app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
   res.json(subjectsByForm[form] || []);
 });
 
-// ================= SERVER (RENDER-SAFE) =================
+// ================= BULK RESULTS =================
+app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
+  const results = req.body;
+  console.log('Bulk results request received:', results);
+
+  if (!Array.isArray(results) || results.length === 0) {
+    return res.status(400).json({ error: 'No results provided' });
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    for (const r of results) {
+      try {
+        if (!r.student_id || !r.subject) {
+          throw new Error(`Missing student_id or subject in entry: ${JSON.stringify(r)}`);
+        }
+
+        let examId = r.exam_id;
+
+        if (!examId) {
+          if (!r.term || !r.year) {
+            throw new Error(`Missing term/year for auto-created exam in entry: ${JSON.stringify(r)}`);
+          }
+
+          const [existingExam] = await conn.query(
+            'SELECT id FROM exams WHERE term = ? AND year = ? LIMIT 1',
+            [r.term, r.year]
+          );
+
+          if (existingExam.length > 0) {
+            examId = existingExam[0].id;
+          } else {
+            const examName = `Exam — ${r.term}, ${r.year}`;
+            const [newExam] = await conn.query(
+              'INSERT INTO exams (name, term, year) VALUES (?, ?, ?)',
+              [examName, r.term, r.year]
+            );
+            examId = newExam.insertId;
+          }
+        }
+
+        const [lockRows] = await conn.query(
+          'SELECT * FROM result_locks WHERE form = ? AND term = ? AND year = ?',
+          [r.form, r.term, r.year]
+        );
+        if (lockRows.length) throw new Error('Results are locked for this term');
+
+        await conn.query(
+          `INSERT INTO results (student_id, subject, ca, midterm, endterm, exam_id)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             ca = VALUES(ca),
+             midterm = VALUES(midterm),
+             endterm = VALUES(endterm),
+             exam_id = VALUES(exam_id)`,
+          [
+            r.student_id,
+            r.subject,
+            Number(r.ca) || 0,
+            Number(r.midterm) || 0,
+            Number(r.endterm) || 0,
+            examId
+          ]
+        );
+
+        const [totals] = await conn.query(
+          `SELECT student_id, SUM(ca + midterm + endterm) AS total
+           FROM results
+           WHERE exam_id = ?
+           GROUP BY student_id
+           ORDER BY total DESC`,
+          [examId]
+        );
+
+        let position = 1;
+        for (let t of totals) {
+          await conn.query(
+            'UPDATE results SET total_score = ?, position = ? WHERE student_id = ? AND exam_id = ?',
+            [t.total, position, t.student_id, examId]
+          );
+          position++;
+        }
+
+      } catch (err) {
+        console.error('Error processing result entry:', r, err.message);
+        await conn.rollback();
+        return res.status(400).json({ error: err.message });
+      }
+    }
+
+    await conn.commit();
+    console.log('Bulk results saved successfully');
+    res.json({ message: 'Results saved successfully' });
+  } catch (err) {
+    await conn.rollback();
+    console.error('Failed to save bulk results:', err);
+    res.status(500).json({ error: 'Failed to save results' });
+  } finally {
+    conn.release();
+  }
+});
+
+// ================= SERVER =================
 const PORT = process.env.PORT;
 
 if (!PORT) {
