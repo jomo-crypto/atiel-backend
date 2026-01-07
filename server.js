@@ -247,73 +247,77 @@ app.post('/api/admin/results', verifyAdminToken, async (req, res) => {
   }
 });
 
-// Bulk save results
-app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
-  const results = req.body;
-  if (!Array.isArray(results) || results.length === 0) return res.status(400).json({ error: 'No results provided' });
+// ================= BULK SAVE RESULTS =================
+app.post('/api/admin/results/bulk', async (req, res) => {
+  const results = req.body; // array of { student_id, subject, ca, midterm, endterm, exam_id }
 
-  const connection = await pool.getConnection();
+  if (!Array.isArray(results) || results.length === 0) {
+    return res.status(400).json({ error: 'No results provided' });
+  }
+
+  const conn = await pool.getConnection();
   try {
-    await ensureResultsColumns(); // ensure columns exist
+    await conn.beginTransaction();
 
-    let examId, examTerm, examYear;
-    for (let r of results) {
-      const { studentId, subject, score, term, year } = r;
-      const [examRows] = await connection.query('SELECT id, term, year FROM exams WHERE term = ? AND year = ? LIMIT 1', [term, year]);
-      if (examRows.length) {
-        examId = examRows[0].id;
-        examTerm = examRows[0].term;
-        examYear = examRows[0].year;
-      } else {
-        const [insertRes] = await connection.query(
-          'INSERT INTO exams (name, term, year) VALUES (?, ?, ?)',
-          [`${term} ${year}`, term, year]
-        );
-        examId = insertRes.insertId;
-        examTerm = term;
-        examYear = year;
+    for (const r of results) {
+      // 🔹 1. Check if student exists
+      const [studentRows] = await conn.query(
+        'SELECT * FROM students WHERE id = ?',
+        [r.student_id]
+      );
+
+      if (!studentRows || studentRows.length === 0) {
+        await conn.rollback();
+        return res.status(400).json({ error: `Student ID ${r.student_id} not found` });
       }
 
-      const [studentRows] = await connection.query('SELECT form FROM students WHERE id = ?', [studentId]);
-      const form = studentRows[0].form;
+      const student = studentRows[0];
 
-      const [lockRows] = await connection.query(
-        'SELECT * FROM result_locks WHERE form = ? AND term = ? AND year = ?',
-        [form, term, year]
-      );
-      if (lockRows.length) continue;
+      let examId = r.exam_id;
 
-      await connection.query(
-        `INSERT INTO results (student_id, exam_id, subject, ca)
-         VALUES (?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE ca = VALUES(ca)`,
-        [studentId, examId, subject, score]
+      // 🔹 2. Auto-create exam if exam_id is missing
+      if (!examId) {
+        // Build a name for the exam if missing
+        const examName = `${r.subject || 'Unknown'} Exam`;
+        const term = r.term || 'Term 1';
+        const year = r.year || new Date().getFullYear();
+
+        const [examRows] = await conn.query(
+          'SELECT * FROM exams WHERE name = ? AND term = ? AND year = ?',
+          [examName, term, year]
+        );
+
+        if (examRows.length > 0) {
+          examId = examRows[0].id;
+        } else {
+          const [newExam] = await conn.query(
+            'INSERT INTO exams (name, term, year) VALUES (?, ?, ?)',
+            [examName, term, year]
+          );
+          examId = newExam.insertId;
+        }
+      }
+
+      // 🔹 3. Insert or update the result
+      await conn.query(
+        `INSERT INTO results (student_id, exam_id, subject, ca, midterm, endterm)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE ca = VALUES(ca), midterm = VALUES(midterm), endterm = VALUES(endterm)`,
+        [r.student_id, examId, r.subject, r.ca || 0, r.midterm || 0, r.endterm || 0]
       );
     }
 
-    // compute totals & positions
-    const [totals] = await connection.query(`
-      SELECT student_id, SUM(ca + midterm + endterm) AS total
-      FROM results
-      WHERE exam_id = ?
-      GROUP BY student_id
-      ORDER BY total DESC
-    `, [examId]);
-
-    let position = 1;
-    for (let t of totals) {
-      await connection.query(
-        'UPDATE results SET total_score = ?, position = ? WHERE student_id = ? AND exam_id = ?',
-        [t.total, position, t.student_id, examId]
-      );
-      position++;
-    }
-
-    res.json({ message: 'Bulk results saved with totals and positions' });
+    await conn.commit();
+    res.json({ message: 'Results saved successfully' });
+  } catch (err) {
+    await conn.rollback();
+    console.error(err);
+    res.status(500).json({ error: 'Failed to save results' });
   } finally {
-    connection.release();
+    conn.release();
   }
 });
+
 
 // 🔹 UPDATED: Fetch results filtered by form, term, year
 app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
