@@ -36,7 +36,11 @@ const ensureResultsColumns = async () => {
     const [cols] = await connection.query(`SHOW COLUMNS FROM results LIKE 'total_score'`);
     if (!cols.length) {
       console.log('Adding total_score and position columns...');
-      await connection.query(`ALTER TABLE results ADD COLUMN total_score INT DEFAULT 0, ADD COLUMN position INT DEFAULT NULL`);
+      await connection.query(`
+        ALTER TABLE results
+        ADD COLUMN total_score INT DEFAULT 0,
+        ADD COLUMN position INT DEFAULT NULL
+      `);
     }
   } finally {
     connection.release();
@@ -51,7 +55,7 @@ const verifyAdminToken = (req, res, next) => {
     if (!token) return res.status(401).json({ error: 'Unauthorized' });
     req.admin = jwt.verify(token, process.env.JWT_SECRET);
     next();
-  } catch (err) {
+  } catch {
     return res.status(401).json({ error: 'Invalid token' });
   }
 };
@@ -61,7 +65,10 @@ const generateStudentId = async (school) => {
   const prefix = school === 'girls' ? 'AG' : 'AB';
   const connection = await pool.getConnection();
   try {
-    const [rows] = await connection.query('SELECT id FROM students WHERE id LIKE ? ORDER BY id DESC LIMIT 1', [`${prefix}-%`]);
+    const [rows] = await connection.query(
+      'SELECT id FROM students WHERE id LIKE ? ORDER BY id DESC LIMIT 1',
+      [`${prefix}-%`]
+    );
     let next = 1001;
     if (rows.length) next = parseInt(rows[0].id.split('-')[1]) + 1;
     return `${prefix}-${next}`;
@@ -76,14 +83,25 @@ app.get('/', (req, res) => res.status(200).send('OK'));
 // ================= ADMIN AUTH =================
 app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+  if (!username || !password)
+    return res.status(400).json({ error: 'Username and password required' });
+
   const connection = await pool.getConnection();
   try {
-    const [rows] = await connection.query('SELECT * FROM admins WHERE username = ?', [username]);
+    const [rows] = await connection.query(
+      'SELECT * FROM admins WHERE username = ?',
+      [username]
+    );
     if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
+
     const match = await bcrypt.compare(password, rows[0].password_hash);
     if (!match) return res.status(401).json({ error: 'Invalid credentials' });
-    const token = jwt.sign({ id: rows[0].id }, process.env.JWT_SECRET, { expiresIn: '8h' });
+
+    const token = jwt.sign(
+      { id: rows[0].id },
+      process.env.JWT_SECRET,
+      { expiresIn: '8h' }
+    );
     res.json({ token });
   } catch (err) {
     logError(err);
@@ -96,12 +114,19 @@ app.post('/api/admin/login', async (req, res) => {
 // ================= STUDENTS =================
 app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
   const { name, school, form, pin } = req.body;
-  if (!name || !school || !form || !pin) return res.status(400).json({ error: 'All fields required' });
+  if (!name || !school || !form || !pin)
+    return res.status(400).json({ error: 'All fields required' });
+
   const connection = await pool.getConnection();
   try {
     const id = await generateStudentId(school);
     const pinHash = await bcrypt.hash(String(pin), 10);
-    await connection.query('INSERT INTO students (id, name, school, form, pin_hash) VALUES (?, ?, ?, ?, ?)', [id, name, school, form, pinHash]);
+
+    await connection.query(
+      'INSERT INTO students (id, name, school, form, pin_hash) VALUES (?, ?, ?, ?, ?)',
+      [id, name, school, form, pinHash]
+    );
+
     res.json({ message: 'Student added', studentId: id });
   } catch (err) {
     logError(err);
@@ -118,6 +143,7 @@ app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
     const query = form
       ? 'SELECT id, name, school, form FROM students WHERE form = ? ORDER BY name'
       : 'SELECT id, name, school, form FROM students ORDER BY form, name';
+
     const [rows] = await connection.query(query, form ? [form] : []);
     res.json(rows);
   } catch (err) {
@@ -149,7 +175,10 @@ app.post('/api/admin/students/:id/regenerate-pin', verifyAdminToken, async (req,
   const connection = await pool.getConnection();
   try {
     const pinHash = await bcrypt.hash(String(newPin), 10);
-    await connection.query('UPDATE students SET pin_hash = ? WHERE id = ?', [pinHash, id]);
+    await connection.query(
+      'UPDATE students SET pin_hash = ? WHERE id = ?',
+      [pinHash, id]
+    );
     res.json({ message: 'PIN regenerated', newPin });
   } catch (err) {
     logError(err);
@@ -162,10 +191,15 @@ app.post('/api/admin/students/:id/regenerate-pin', verifyAdminToken, async (req,
 // ================= EXAMS =================
 app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
   const { name, term, year } = req.body;
-  if (!name || !term || !year) return res.status(400).json({ error: 'Missing fields' });
+  if (!name || !term || !year)
+    return res.status(400).json({ error: 'Missing fields' });
+
   const connection = await pool.getConnection();
   try {
-    await connection.query('INSERT INTO exams (name, term, year) VALUES (?, ?, ?)', [name, term, year]);
+    await connection.query(
+      'INSERT INTO exams (name, term, year) VALUES (?, ?, ?)',
+      [name, term, year]
+    );
     res.json({ message: 'Exam created' });
   } catch (err) {
     logError(err);
@@ -178,7 +212,9 @@ app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
 app.get('/api/admin/exams', verifyAdminToken, async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    const [rows] = await connection.query('SELECT * FROM exams ORDER BY year DESC, term ASC');
+    const [rows] = await connection.query(
+      'SELECT * FROM exams ORDER BY year DESC, term ASC'
+    );
     res.json(rows);
   } catch (err) {
     logError(err);
@@ -198,4 +234,16 @@ app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
     'Form 4': ['AGR','ENG','BIO','CHEM','MATH','GEO','PHY','CHICH','SOC','HIS','COMP']
   };
   res.json(subjectsByForm[form] || []);
+});
+
+// ================= SERVER (RENDER-SAFE) =================
+const PORT = process.env.PORT;
+
+if (!PORT) {
+  console.error('❌ PORT environment variable is not set');
+  process.exit(1);
+}
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Server running on port ${PORT}`);
 });
