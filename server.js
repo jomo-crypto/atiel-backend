@@ -17,6 +17,12 @@ app.use(cors({
   ]
 }));
 app.use(express.json());
+// Log every incoming request
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+  next();
+});
+
 
 // ================= DATABASE =================
 const pool = mysql.createPool({
