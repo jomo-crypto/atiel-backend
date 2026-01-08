@@ -250,12 +250,15 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
   const connection = await pool.getConnection();
 
   try {
+    console.log('GET /results query params:', req.query); // debug log
+
     let query = `
       SELECT r.*, s.name AS student_name, s.form, e.name AS exam_name
       FROM results r
       JOIN students s ON r.student_id = s.id
       JOIN exams e ON r.exam_id = e.id
     `;
+
     const conditions = [];
     const params = [];
 
@@ -266,7 +269,13 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
       'Term 3': 3,
       'term1': 1,
       'term2': 2,
-      'term3': 3
+      'term3': 3,
+      'Midterm Term 1': 1,
+      'Midterm Term 2': 2,
+      'Midterm Term 3': 3,
+      'End of Term 1': 1,
+      'End of Term 2': 2,
+      'End of Term 3': 3
     };
 
     if (form) {
@@ -275,7 +284,11 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
     }
 
     if (term) {
-      const numericTerm = termMap[term] || term; // fallback to numeric term if already number
+      const numericTerm = termMap[term];
+      if (!numericTerm) {
+        console.log('Warning: Unknown term:', term);
+        return res.status(400).json({ error: `Unknown term value: ${term}` });
+      }
       conditions.push('r.term = ?');
       params.push(numericTerm);
     }
@@ -289,22 +302,27 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
       query += ' WHERE ' + conditions.join(' AND ');
     }
 
-    query += ' ORDER BY s.form, s.name, r.subject'; // optional: order neatly
+    query += ' ORDER BY s.form, s.name, r.subject'; // optional: neat ordering
+
+    console.log('Final SQL query:', query, 'Params:', params); // debug log
 
     const [rows] = await connection.query(query, params);
 
     if (!rows.length) {
+      console.log('No results found for query params:', req.query); // debug log
       return res.status(404).json({ message: 'No results found' });
     }
 
+    console.log(`Returning ${rows.length} results`);
     res.json(rows);
   } catch (err) {
     logError(err);
-    res.status(500).json({ error: 'Failed to fetch results' });
+    res.status(500).json({ error: 'Failed to fetch results', details: err.message });
   } finally {
     connection.release();
   }
 });
+
 
 
 
