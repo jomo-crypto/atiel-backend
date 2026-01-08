@@ -244,7 +244,7 @@ app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
   res.json(subjectsByForm[form] || []);
 });
 
-// ================= BULK RESULTS (UPSERT) =================
+// ================= BULK RESULTS (UPSERT + FULL CALCULATION) =================
 console.log('🔥 BULK RESULTS ROUTE VERSION LOADED');
 
 app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
@@ -260,6 +260,9 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
   try {
     await connection.beginTransaction();
 
+    const examFormMap = {}; // { exam_id: Set of forms }
+
+    // ================= UPSERT =================
     for (const r of results) {
       const {
         student_id,
@@ -272,14 +275,22 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
         year
       } = r;
 
-      // 🛑 HARD VALIDATION (prevents silent DB crashes)
       if (!student_id || !subject || !exam_id || !term || !year) {
-        throw new Error(
-          `Missing required fields for ${student_id} ${subject}`
-        );
+        throw new Error(`Missing required fields for ${student_id} ${subject}`);
       }
 
-      // ✅ UPSERT (insert OR update)
+      // Get student form
+      const [studentRow] = await connection.query(
+        'SELECT form FROM students WHERE id = ?',
+        [student_id]
+      );
+      if (!studentRow.length) throw new Error(`Student not found: ${student_id}`);
+      const form = studentRow[0].form;
+
+      if (!examFormMap[exam_id]) examFormMap[exam_id] = new Set();
+      examFormMap[exam_id].add(form);
+
+      // UPSERT
       await connection.query(
         `
         INSERT INTO results
@@ -293,21 +304,77 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
           term = VALUES(term),
           year = VALUES(year)
         `,
-        [
-          student_id,
-          subject,
-          ca,
-          midterm,
-          endterm,
-          exam_id,
-          term,
-          year
-        ]
+        [student_id, subject, ca, midterm, endterm, exam_id, term, year]
       );
     }
 
+    // ================= CALCULATE SCORE, TOTAL_SCORE, AVERAGE, GRADE & POSITIONS =================
+    for (const exId of Object.keys(examFormMap)) {
+      // 1️⃣ score per subject
+      await connection.query(
+        `UPDATE results SET score = ca + midterm + endterm WHERE exam_id = ?`,
+        [exId]
+      );
+
+      // 2️⃣ total_score per student
+      await connection.query(
+        `
+        UPDATE results r
+        JOIN (
+          SELECT student_id, SUM(score) AS total, COUNT(*) AS subjects_count
+          FROM results
+          WHERE exam_id = ?
+          GROUP BY student_id
+        ) t
+        ON r.student_id = t.student_id AND r.exam_id = ?
+        SET r.total_score = t.total,
+            r.average_score = t.total / t.subjects_count
+        `,
+        [exId, exId]
+      );
+
+      // 3️⃣ assign grade based on average_score
+      await connection.query(
+        `
+        UPDATE results
+        SET grade = CASE
+          WHEN average_score >= 80 THEN 'A'
+          WHEN average_score >= 70 THEN 'B'
+          WHEN average_score >= 60 THEN 'C'
+          WHEN average_score >= 50 THEN 'D'
+          ELSE 'F'
+        END
+        WHERE exam_id = ?
+        `,
+        [exId]
+      );
+
+      // 4️⃣ positions per form
+      for (const form of examFormMap[exId]) {
+        await connection.query(`SET @pos := 0`);
+        await connection.query(
+          `
+          UPDATE results r
+          JOIN (
+            SELECT r.student_id, (@pos := @pos + 1) AS rank
+            FROM results r
+            JOIN students s ON r.student_id = s.id
+            WHERE r.exam_id = ? AND s.form = ?
+            GROUP BY r.student_id
+            ORDER BY SUM(r.score) DESC
+          ) ranked
+          ON r.student_id = ranked.student_id AND r.exam_id = ?
+          SET r.position = ranked.rank
+          `,
+          [exId, form, exId]
+        );
+      }
+    }
+
     await connection.commit();
-    res.json({ message: 'Results saved successfully' });
+    res.json({
+      message: 'Results saved successfully with score, total_score, average_score, grade, and position calculated'
+    });
 
   } catch (err) {
     await connection.rollback();
@@ -320,6 +387,7 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
     connection.release();
   }
 });
+
 
 
 
