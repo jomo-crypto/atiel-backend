@@ -244,84 +244,43 @@ app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
   res.json(subjectsByForm[form] || []);
 });
 
-// ================= GET RESULTS =================
+/// ================= GET RESULTS =================
 app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
   const { form, term, year } = req.query;
   const connection = await pool.getConnection();
-
   try {
-    console.log('GET /results query params:', req.query); // debug log
-
     let query = `
-      SELECT r.*, s.name AS student_name, s.form, e.name AS exam_name
+      SELECT r.*, s.name AS student_name, e.name AS exam_name, e.locked
       FROM results r
       JOIN students s ON r.student_id = s.id
       JOIN exams e ON r.exam_id = e.id
+      WHERE 1
     `;
-
-    const conditions = [];
     const params = [];
 
-    // ===== Map term names to numbers =====
-    const termMap = {
-      'Term 1': 1,
-      'Term 2': 2,
-      'Term 3': 3,
-      'term1': 1,
-      'term2': 2,
-      'term3': 3,
-      'Midterm Term 1': 1,
-      'Midterm Term 2': 2,
-      'Midterm Term 3': 3,
-      'End of Term 1': 1,
-      'End of Term 2': 2,
-      'End of Term 3': 3
-    };
-
     if (form) {
-      conditions.push('s.form = ?');
+      query += ' AND s.form = ?';
       params.push(form);
     }
-
     if (term) {
-      const numericTerm = termMap[term];
-      if (!numericTerm) {
-        console.log('Warning: Unknown term:', term);
-        return res.status(400).json({ error: `Unknown term value: ${term}` });
-      }
-      conditions.push('r.term = ?');
-      params.push(numericTerm);
+      query += ' AND r.term = ?';
+      params.push(term);
     }
-
     if (year) {
-      conditions.push('r.year = ?');
+      query += ' AND r.year = ?';
       params.push(year);
     }
 
-    if (conditions.length) {
-      query += ' WHERE ' + conditions.join(' AND ');
-    }
-
-    query += ' ORDER BY s.form, s.name, r.subject'; // optional: neat ordering
-
-    console.log('Final SQL query:', query, 'Params:', params); // debug log
-
     const [rows] = await connection.query(query, params);
-
-    if (!rows.length) {
-      console.log('No results found for query params:', req.query); // debug log
-      return res.status(404).json({ message: 'No results found' });
-    }
-
-    console.log(`Returning ${rows.length} results`);
     res.json(rows);
   } catch (err) {
-    logError(err);
-    res.status(500).json({ error: 'Failed to fetch results', details: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch results' });
   } finally {
     connection.release();
   }
 });
+
 
 
 
