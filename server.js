@@ -394,6 +394,50 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
   }
 });
 
+// ================= GET RESULTS =================
+app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
+  const { term, year, exam_id, student_id } = req.query;
+  const connection = await pool.getConnection();
+
+  try {
+    let query = `
+      SELECT r.*, s.name AS student_name, e.name AS exam_name, e.locked AS locked
+      FROM results r
+      JOIN students s ON r.student_id = s.id
+      JOIN exams e ON r.exam_id = e.id
+      WHERE 1
+    `;
+    const params = [];
+
+    // Optional filters
+    if (term) {
+      query += ' AND r.term = ?';
+      params.push(term);
+    }
+    if (year) {
+      query += ' AND r.year = ?';
+      params.push(year);
+    }
+    if (exam_id) {
+      query += ' AND r.exam_id = ?';
+      params.push(exam_id);
+    }
+    if (student_id) {
+      query += ' AND r.student_id = ?';
+      params.push(student_id);
+    }
+
+    query += ' ORDER BY s.name, r.exam_id, r.subject';
+
+    const [rows] = await connection.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    logError(err);
+    res.status(500).json({ error: 'Failed to fetch results' });
+  } finally {
+    connection.release();
+  }
+});
 
 
 
