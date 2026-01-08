@@ -248,6 +248,7 @@ app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
 app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
   const { form, term, year } = req.query;
   const connection = await pool.getConnection();
+
   try {
     let query = `
       SELECT r.*, s.name AS student_name, s.form, e.name AS exam_name
@@ -258,14 +259,27 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
     const conditions = [];
     const params = [];
 
+    // ===== Map term names to numbers =====
+    const termMap = {
+      'Term 1': 1,
+      'Term 2': 2,
+      'Term 3': 3,
+      'term1': 1,
+      'term2': 2,
+      'term3': 3
+    };
+
     if (form) {
       conditions.push('s.form = ?');
       params.push(form);
     }
+
     if (term) {
+      const numericTerm = termMap[term] || term; // fallback to numeric term if already number
       conditions.push('r.term = ?');
-      params.push(term);
+      params.push(numericTerm);
     }
+
     if (year) {
       conditions.push('r.year = ?');
       params.push(year);
@@ -275,7 +289,14 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
       query += ' WHERE ' + conditions.join(' AND ');
     }
 
+    query += ' ORDER BY s.form, s.name, r.subject'; // optional: order neatly
+
     const [rows] = await connection.query(query, params);
+
+    if (!rows.length) {
+      return res.status(404).json({ message: 'No results found' });
+    }
+
     res.json(rows);
   } catch (err) {
     logError(err);
@@ -284,6 +305,7 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
     connection.release();
   }
 });
+
 
 
 // ================= BULK RESULTS (UPSERT + FULL CALCULATION) =================
