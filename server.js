@@ -244,6 +244,48 @@ app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
   res.json(subjectsByForm[form] || []);
 });
 
+// ================= GET RESULTS =================
+app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
+  const { form, term, year } = req.query;
+  const connection = await pool.getConnection();
+  try {
+    let query = `
+      SELECT r.*, s.name AS student_name, s.form, e.name AS exam_name
+      FROM results r
+      JOIN students s ON r.student_id = s.id
+      JOIN exams e ON r.exam_id = e.id
+    `;
+    const conditions = [];
+    const params = [];
+
+    if (form) {
+      conditions.push('s.form = ?');
+      params.push(form);
+    }
+    if (term) {
+      conditions.push('r.term = ?');
+      params.push(term);
+    }
+    if (year) {
+      conditions.push('r.year = ?');
+      params.push(year);
+    }
+
+    if (conditions.length) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+
+    const [rows] = await connection.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    logError(err);
+    res.status(500).json({ error: 'Failed to fetch results' });
+  } finally {
+    connection.release();
+  }
+});
+
+
 // ================= BULK RESULTS (UPSERT + FULL CALCULATION) =================
 console.log('🔥 BULK RESULTS ROUTE VERSION LOADED');
 
