@@ -244,7 +244,7 @@ app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
   res.json(subjectsByForm[form] || []);
 });
 
-// ================= BULK RESULTS (UPSERT + FULL CALCULATION) =================
+// ================= BULK RESULTS (UPSERT + FULL CALCULATION + LOCK EXAM) =================
 console.log('🔥 BULK RESULTS ROUTE VERSION LOADED');
 
 app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
@@ -369,11 +369,17 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
           [exId, form, exId]
         );
       }
+
+      // ================= LOCK EXAM =================
+      await connection.query(
+        `UPDATE exams SET locked = 1 WHERE id = ?`,
+        [exId]
+      );
     }
 
     await connection.commit();
     res.json({
-      message: 'Results saved successfully with score, total_score, average_score, grade, and position calculated'
+      message: 'Results saved, calculated, and exam locked successfully'
     });
 
   } catch (err) {
@@ -387,6 +393,7 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
     connection.release();
   }
 });
+
 
 
 
