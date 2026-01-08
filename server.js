@@ -38,16 +38,16 @@ const pool = mysql.createPool({
 // ================= HELPER =================
 const logError = (err) => console.error(new Date().toISOString(), err);
 
+// Ensure results table has all needed columns
 const ensureResultsColumns = async () => {
   const connection = await pool.getConnection();
   try {
-    const [cols] = await connection.query(`SHOW COLUMNS FROM results LIKE 'total_score'`);
+    const [cols] = await connection.query(`SHOW COLUMNS FROM results LIKE 'average_score'`);
     if (!cols.length) {
-      console.log('Adding total_score and position columns...');
+      console.log('Adding average_score column to results...');
       await connection.query(`
         ALTER TABLE results
-        ADD COLUMN total_score INT DEFAULT 0,
-        ADD COLUMN position INT DEFAULT NULL
+        ADD COLUMN average_score DECIMAL(5,2) DEFAULT 0.00
       `);
     }
   } finally {
@@ -244,14 +244,9 @@ app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
   res.json(subjectsByForm[form] || []);
 });
 
-// ================= BULK RESULTS (UPSERT + FULL CALCULATION + LOCK EXAM) =================
-console.log('🔥 BULK RESULTS ROUTE VERSION LOADED');
-
+// ================= BULK RESULTS (UPSERT + CALC + LOCK EXAM) =================
 app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
   const results = req.body;
-
-  console.log('Bulk results request received:', results);
-
   if (!Array.isArray(results) || results.length === 0) {
     return res.status(400).json({ error: 'No results provided' });
   }
@@ -259,27 +254,14 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
+    const examFormMap = {};
 
-    const examFormMap = {}; // { exam_id: Set of forms }
-
-    // ================= UPSERT =================
     for (const r of results) {
-      const {
-        student_id,
-        subject,
-        ca = 0,
-        midterm = 0,
-        endterm = 0,
-        exam_id,
-        term,
-        year
-      } = r;
-
+      const { student_id, subject, ca=0, midterm=0, endterm=0, exam_id, term, year } = r;
       if (!student_id || !subject || !exam_id || !term || !year) {
-        throw new Error(`Missing required fields for ${student_id} ${subject}`);
+        throw new Error(`Missing fields for ${student_id} ${subject}`);
       }
 
-      // Get student form
       const [studentRow] = await connection.query(
         'SELECT form FROM students WHERE id = ?',
         [student_id]
@@ -290,105 +272,80 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
       if (!examFormMap[exam_id]) examFormMap[exam_id] = new Set();
       examFormMap[exam_id].add(form);
 
-      // UPSERT
       await connection.query(
-        `
-        INSERT INTO results
-          (student_id, subject, ca, midterm, endterm, exam_id, term, year)
-        VALUES
-          (?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-          ca = VALUES(ca),
-          midterm = VALUES(midterm),
-          endterm = VALUES(endterm),
-          term = VALUES(term),
-          year = VALUES(year)
-        `,
+        `INSERT INTO results (student_id, subject, ca, midterm, endterm, exam_id, term, year)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           ca = VALUES(ca),
+           midterm = VALUES(midterm),
+           endterm = VALUES(endterm),
+           term = VALUES(term),
+           year = VALUES(year)`,
         [student_id, subject, ca, midterm, endterm, exam_id, term, year]
       );
     }
 
-    // ================= CALCULATE SCORE, TOTAL_SCORE, AVERAGE, GRADE & POSITIONS =================
+    // Calculate scores, totals, averages, grades, positions
     for (const exId of Object.keys(examFormMap)) {
-      // 1️⃣ score per subject
       await connection.query(
         `UPDATE results SET score = ca + midterm + endterm WHERE exam_id = ?`,
         [exId]
       );
 
-      // 2️⃣ total_score per student
       await connection.query(
-        `
-        UPDATE results r
-        JOIN (
-          SELECT student_id, SUM(score) AS total, COUNT(*) AS subjects_count
-          FROM results
-          WHERE exam_id = ?
-          GROUP BY student_id
-        ) t
-        ON r.student_id = t.student_id AND r.exam_id = ?
-        SET r.total_score = t.total,
-            r.average_score = t.total / t.subjects_count
-        `,
+        `UPDATE results r
+         JOIN (
+           SELECT student_id, SUM(score) AS total, COUNT(*) AS subjects_count
+           FROM results
+           WHERE exam_id = ?
+           GROUP BY student_id
+         ) t
+         ON r.student_id = t.student_id AND r.exam_id = ?
+         SET r.total_score = t.total,
+             r.average_score = t.total / t.subjects_count`,
         [exId, exId]
       );
 
-      // 3️⃣ assign grade based on average_score
       await connection.query(
-        `
-        UPDATE results
-        SET grade = CASE
-          WHEN average_score >= 80 THEN 'A'
-          WHEN average_score >= 70 THEN 'B'
-          WHEN average_score >= 60 THEN 'C'
-          WHEN average_score >= 50 THEN 'D'
-          ELSE 'F'
-        END
-        WHERE exam_id = ?
-        `,
+        `UPDATE results
+         SET grade = CASE
+           WHEN average_score >= 80 THEN 'A'
+           WHEN average_score >= 70 THEN 'B'
+           WHEN average_score >= 60 THEN 'C'
+           WHEN average_score >= 50 THEN 'D'
+           ELSE 'F'
+         END
+         WHERE exam_id = ?`,
         [exId]
       );
 
-      // 4️⃣ positions per form
       for (const form of examFormMap[exId]) {
         await connection.query(`SET @pos := 0`);
         await connection.query(
-          `
-          UPDATE results r
-          JOIN (
-            SELECT r.student_id, (@pos := @pos + 1) AS rank
-            FROM results r
-            JOIN students s ON r.student_id = s.id
-            WHERE r.exam_id = ? AND s.form = ?
-            GROUP BY r.student_id
-            ORDER BY SUM(r.score) DESC
-          ) ranked
-          ON r.student_id = ranked.student_id AND r.exam_id = ?
-          SET r.position = ranked.rank
-          `,
+          `UPDATE results r
+           JOIN (
+             SELECT r.student_id, (@pos := @pos + 1) AS rank
+             FROM results r
+             JOIN students s ON r.student_id = s.id
+             WHERE r.exam_id = ? AND s.form = ?
+             GROUP BY r.student_id
+             ORDER BY SUM(r.score) DESC
+           ) ranked
+           ON r.student_id = ranked.student_id AND r.exam_id = ?
+           SET r.position = ranked.rank`,
           [exId, form, exId]
         );
       }
 
-      // ================= LOCK EXAM =================
-      await connection.query(
-        `UPDATE exams SET locked = 1 WHERE id = ?`,
-        [exId]
-      );
+      await connection.query(`UPDATE exams SET locked = 1 WHERE id = ?`, [exId]);
     }
 
     await connection.commit();
-    res.json({
-      message: 'Results saved, calculated, and exam locked successfully'
-    });
-
+    res.json({ message: 'Results saved, calculated, and exam locked successfully' });
   } catch (err) {
     await connection.rollback();
     logError(err);
-    res.status(500).json({
-      error: 'Failed to save results',
-      details: err.message
-    });
+    res.status(500).json({ error: 'Failed to save results', details: err.message });
   } finally {
     connection.release();
   }
@@ -398,7 +355,6 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
 app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
   const { term, year, exam_id, student_id } = req.query;
   const connection = await pool.getConnection();
-
   try {
     let query = `
       SELECT r.*, s.name AS student_name, e.name AS exam_name, e.locked AS locked
@@ -408,27 +364,12 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
       WHERE 1
     `;
     const params = [];
-
-    // Optional filters
-    if (term) {
-      query += ' AND r.term = ?';
-      params.push(term);
-    }
-    if (year) {
-      query += ' AND r.year = ?';
-      params.push(year);
-    }
-    if (exam_id) {
-      query += ' AND r.exam_id = ?';
-      params.push(exam_id);
-    }
-    if (student_id) {
-      query += ' AND r.student_id = ?';
-      params.push(student_id);
-    }
+    if (term) { query += ' AND r.term = ?'; params.push(term); }
+    if (year) { query += ' AND r.year = ?'; params.push(year); }
+    if (exam_id) { query += ' AND r.exam_id = ?'; params.push(exam_id); }
+    if (student_id) { query += ' AND r.student_id = ?'; params.push(student_id); }
 
     query += ' ORDER BY s.name, r.exam_id, r.subject';
-
     const [rows] = await connection.query(query, params);
     res.json(rows);
   } catch (err) {
@@ -450,22 +391,18 @@ app.post('/api/parent/login', async (req, res) => {
       'SELECT id, name, form, school, pin_hash FROM students WHERE id = ?',
       [studentId]
     );
-
     if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
 
     const student = rows[0];
     const match = await bcrypt.compare(String(pin), student.pin_hash);
-
     if (!match) return res.status(401).json({ error: 'Invalid credentials' });
 
-    // Send minimal student info to frontend
     res.json({
       id: student.id,
       name: student.name,
       form: student.form,
       school: student.school
     });
-
   } catch (err) {
     logError(err);
     res.status(500).json({ error: 'Server error' });
@@ -487,10 +424,8 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
        WHERE r.student_id = ?`,
       [studentId]
     );
-
     if (!rows.length) return res.json([]);
 
-    // Group by exam
     const examMap = {};
     for (const r of rows) {
       const key = `${r.exam_name}_${r.term}_${r.year}`;
@@ -507,7 +442,6 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
       examMap[key].subjects.push({ subject: r.subject, total: r.score });
     }
 
-    // Count total students per exam/form
     const exams = Object.values(examMap);
     for (const exam of exams) {
       const [[{ count }]] = await connection.query(
@@ -518,7 +452,6 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
     }
 
     res.json(exams);
-
   } catch (err) {
     logError(err);
     res.status(500).json({ error: 'Failed to fetch results' });
@@ -529,7 +462,6 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
 
 // ================= SERVER =================
 const PORT = process.env.PORT;
-
 if (!PORT) {
   console.error('❌ PORT environment variable is not set');
   process.exit(1);
