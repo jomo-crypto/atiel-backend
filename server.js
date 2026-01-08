@@ -244,36 +244,48 @@ app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
   res.json(subjectsByForm[form] || []);
 });
 
-// ================= BULK SAVE RESULTS =================
+// ================= BULK RESULTS (UPSERT) =================
 console.log('🔥 BULK RESULTS ROUTE VERSION LOADED');
 
 app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
-  console.log('Bulk results request received:', req.body);
+  const results = req.body;
 
-  if (!Array.isArray(req.body) || req.body.length === 0) {
-    return res.status(400).json({ error: 'Invalid or empty payload' });
+  console.log('Bulk results request received:', results);
+
+  if (!Array.isArray(results) || results.length === 0) {
+    return res.status(400).json({ error: 'No results provided' });
   }
 
   const connection = await pool.getConnection();
-
   try {
     await connection.beginTransaction();
 
-    for (const r of req.body) {
-      if (!r.student_id || !r.subject) continue;
+    for (const r of results) {
+      const {
+        student_id,
+        subject,
+        ca = 0,
+        midterm = 0,
+        endterm = 0,
+        exam_id,
+        term,
+        year
+      } = r;
 
-      const examId = r.exam_id ? Number(r.exam_id) : null;
-
-      if (!examId) {
-        console.warn('⚠️ Skipping row — missing exam_id:', r);
-        continue;
+      // 🛑 HARD VALIDATION (prevents silent DB crashes)
+      if (!student_id || !subject || !exam_id || !term || !year) {
+        throw new Error(
+          `Missing required fields for ${student_id} ${subject}`
+        );
       }
 
+      // ✅ UPSERT (insert OR update)
       await connection.query(
         `
         INSERT INTO results
           (student_id, subject, ca, midterm, endterm, exam_id, term, year)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES
+          (?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
           ca = VALUES(ca),
           midterm = VALUES(midterm),
@@ -282,14 +294,14 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
           year = VALUES(year)
         `,
         [
-          r.student_id,
-          r.subject,
-          Number(r.ca) || 0,
-          Number(r.midterm) || 0,
-          Number(r.endterm) || 0,
-          examId,
-          r.term,
-          Number(r.year)
+          student_id,
+          subject,
+          ca,
+          midterm,
+          endterm,
+          exam_id,
+          term,
+          year
         ]
       );
     }
@@ -299,13 +311,16 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
 
   } catch (err) {
     await connection.rollback();
-    console.error('❌ BULK RESULTS SQL ERROR:', err);
-    res.status(500).json({ error: 'Failed to save results' });
-
+    logError(err);
+    res.status(500).json({
+      error: 'Failed to save results',
+      details: err.message
+    });
   } finally {
     connection.release();
   }
 });
+
 
 
 // ================= SERVER =================
