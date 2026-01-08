@@ -439,8 +439,93 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
   }
 });
 
+// ================= PARENT LOGIN =================
+app.post('/api/parent/login', async (req, res) => {
+  const { studentId, pin } = req.body;
+  if (!studentId || !pin) return res.status(400).json({ error: 'Student ID and PIN required' });
 
+  const connection = await pool.getConnection();
+  try {
+    const [rows] = await connection.query(
+      'SELECT id, name, form, school, pin_hash FROM students WHERE id = ?',
+      [studentId]
+    );
 
+    if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
+
+    const student = rows[0];
+    const match = await bcrypt.compare(String(pin), student.pin_hash);
+
+    if (!match) return res.status(401).json({ error: 'Invalid credentials' });
+
+    // Send minimal student info to frontend
+    res.json({
+      id: student.id,
+      name: student.name,
+      form: student.form,
+      school: student.school
+    });
+
+  } catch (err) {
+    logError(err);
+    res.status(500).json({ error: 'Server error' });
+  } finally {
+    connection.release();
+  }
+});
+
+// ================= PARENT RESULTS =================
+app.get('/api/parent/results/:studentId', async (req, res) => {
+  const { studentId } = req.params;
+  const connection = await pool.getConnection();
+  try {
+    const [rows] = await connection.query(
+      `SELECT r.*, e.name AS exam_name, s.form
+       FROM results r
+       JOIN exams e ON r.exam_id = e.id
+       JOIN students s ON r.student_id = s.id
+       WHERE r.student_id = ?`,
+      [studentId]
+    );
+
+    if (!rows.length) return res.json([]);
+
+    // Group by exam
+    const examMap = {};
+    for (const r of rows) {
+      const key = `${r.exam_name}_${r.term}_${r.year}`;
+      if (!examMap[key]) {
+        examMap[key] = {
+          exam_name: r.exam_name,
+          term: r.term,
+          year: r.year,
+          position: r.position,
+          totalStudents: 0,
+          subjects: []
+        };
+      }
+      examMap[key].subjects.push({ subject: r.subject, total: r.score });
+    }
+
+    // Count total students per exam/form
+    const exams = Object.values(examMap);
+    for (const exam of exams) {
+      const [[{ count }]] = await connection.query(
+        'SELECT COUNT(*) AS count FROM results r JOIN students s ON r.student_id = s.id JOIN exams e ON r.exam_id = e.id WHERE e.name = ? AND s.form = ?',
+        [exam.exam_name, rows[0].form]
+      );
+      exam.totalStudents = count;
+    }
+
+    res.json(exams);
+
+  } catch (err) {
+    logError(err);
+    res.status(500).json({ error: 'Failed to fetch results' });
+  } finally {
+    connection.release();
+  }
+});
 
 // ================= SERVER =================
 const PORT = process.env.PORT;
