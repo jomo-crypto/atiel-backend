@@ -145,14 +145,25 @@ app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
 });
 
 app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
-  const { form } = req.query;
+  const { form, school } = req.query;
   const connection = await pool.getConnection();
   try {
-    const query = form
-      ? 'SELECT id, name, school, form FROM students WHERE form = ? ORDER BY name'
-      : 'SELECT id, name, school, form FROM students ORDER BY form, name';
+    let query = 'SELECT id, name, school, form FROM students WHERE 1';
+    const params = [];
 
-    const [rows] = await connection.query(query, form ? [form] : []);
+    if (form) {
+      query += ' AND form = ?';
+      params.push(form);
+    }
+
+    if (school) {
+      query += ' AND school = ?';
+      params.push(school);
+    }
+
+    query += ' ORDER BY name';
+
+    const [rows] = await connection.query(query, params);
     res.json(rows);
   } catch (err) {
     logError(err);
@@ -161,6 +172,7 @@ app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
     connection.release();
   }
 });
+
 
 app.delete('/api/admin/students/:id', verifyAdminToken, async (req, res) => {
   const { id } = req.params;
