@@ -161,21 +161,23 @@ app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
   const connection = await pool.getConnection();
 
   try {
+    // Base query
     let query = 'SELECT id, name, school, form FROM students WHERE 1';
     const params = [];
 
-    // Filter by form
-    if (form) {
+    // Filter by form if provided
+    if (form && form.trim() !== '') {
       query += ' AND form = ?';
       params.push(form.trim());
     }
 
-    // Filter by school (boys / girls)
-    if (school) {
-      query += ' AND school = ?';
+    // Filter by school if provided (case-insensitive)
+    if (school && school.trim() !== '') {
+      query += ' AND LOWER(school) = LOWER(?)';
       params.push(school.trim());
     }
 
+    // Order by name
     query += ' ORDER BY name';
 
     console.log('STUDENTS SQL:', query, params);
@@ -183,7 +185,7 @@ app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
     const [rows] = await connection.query(query, params);
     res.json(rows);
   } catch (err) {
-    console.error(err);
+    console.error('Failed to fetch students:', err);
     res.status(500).json({ error: 'Failed to fetch students' });
   } finally {
     connection.release();
