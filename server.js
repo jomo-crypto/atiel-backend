@@ -157,7 +157,7 @@ app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
     }
 
     if (school) {
-      query += ' AND school = ?';
+      query += ' AND LOWER (school) = LOWER (?)';
       params.push(school);
     }
 
