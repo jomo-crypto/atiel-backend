@@ -121,9 +121,20 @@ app.post('/api/admin/login', async (req, res) => {
 
 // ================= STUDENTS =================
 app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
-  const { name, school, form, pin } = req.body;
-  if (!name || !school || !form || !pin)
+  const { name, school, pin } = req.body;
+  let { form } = req.body;
+
+  if (!name || !school || !form || !pin) {
     return res.status(400).json({ error: 'All fields required' });
+  }
+
+  // normalize form input
+  form = form.trim().replace(/\s+/g, ' ');
+
+  const allowedForms = ['Form 1', 'Form 2', 'Form 3', 'Form 4'];
+  if (!allowedForms.includes(form)) {
+    return res.status(400).json({ error: 'Invalid form. Use Form 1–4 only.' });
+  }
 
   const connection = await pool.getConnection();
   try {
@@ -144,30 +155,30 @@ app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
   }
 });
 
+
 app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
   const { form, school } = req.query;
   const connection = await pool.getConnection();
 
   try {
-    // Base query
     let query = 'SELECT id, name, school, form FROM students WHERE 1';
     const params = [];
 
-    // Filter by form if provided
+    // Filter by form
     if (form) {
       query += ' AND form = ?';
       params.push(form.trim());
     }
 
-    // Filter by school if provided and not empty
-    if (school && school.trim() !== '') {
-      query += ' AND LOWER(TRIM(school)) = ?';
-      params.push(school.trim().toLowerCase());
+    // Filter by school (boys / girls)
+    if (school) {
+      query += ' AND school = ?';
+      params.push(school.trim());
     }
 
     query += ' ORDER BY name';
 
-    console.log('Fetching students with form=', form, 'school=', school);
+    console.log('STUDENTS SQL:', query, params);
 
     const [rows] = await connection.query(query, params);
     res.json(rows);
@@ -178,7 +189,6 @@ app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
     connection.release();
   }
 });
-
 
 
 app.delete('/api/admin/students/:id', verifyAdminToken, async (req, res) => {
