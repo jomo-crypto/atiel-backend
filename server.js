@@ -157,8 +157,8 @@ app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
     }
 
     if (school) {
-      query += ' AND TRIM LOWER (school) = LOWER (?)';
-      params.push(school);
+      query += ' AND LOWER(TRIM(school)) = LOWER(?)';
+      params.push(school.trim());
     }
 
     query += ' ORDER BY name';
