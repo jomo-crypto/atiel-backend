@@ -157,11 +157,12 @@ app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
     }
 
     if (school) {
-      query += ' AND LOWER (school) = LOWER (?)';
+      query += ' AND TRIM LOWER (school) = LOWER (?)';
       params.push(school);
     }
 
     query += ' ORDER BY name';
+console.log('Fetching students with form=', form, 'school=', school);
 
     const [rows] = await connection.query(query, params);
     res.json(rows);
