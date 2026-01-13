@@ -147,33 +147,38 @@ app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
 app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
   const { form, school } = req.query;
   const connection = await pool.getConnection();
+
   try {
+    // Base query
     let query = 'SELECT id, name, school, form FROM students WHERE 1';
     const params = [];
 
+    // Filter by form if provided
     if (form) {
       query += ' AND form = ?';
-      params.push(form);
+      params.push(form.trim());
     }
 
-    if (school) {
-  query += ' AND LOWER(TRIM(school)) = ?';
-  params.push(school.trim().toLowerCase());
-}
-
+    // Filter by school if provided and not empty
+    if (school && school.trim() !== '') {
+      query += ' AND LOWER(TRIM(school)) = ?';
+      params.push(school.trim().toLowerCase());
+    }
 
     query += ' ORDER BY name';
-console.log('Fetching students with form=', form, 'school=', school);
+
+    console.log('Fetching students with form=', form, 'school=', school);
 
     const [rows] = await connection.query(query, params);
     res.json(rows);
   } catch (err) {
-    logError(err);
+    console.error(err);
     res.status(500).json({ error: 'Failed to fetch students' });
   } finally {
     connection.release();
   }
 });
+
 
 
 app.delete('/api/admin/students/:id', verifyAdminToken, async (req, res) => {
