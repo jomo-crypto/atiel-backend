@@ -1,4 +1,3 @@
-console.log('🔥 BULK RESULTS ROUTE VERSION LOADED');
 
 require('dotenv').config();
 const express = require('express');
@@ -460,6 +459,109 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
   }
 });
 
+// ================= PARENT LOGIN =================
+app.post('/api/parent/login', async (req, res) => {
+  const { studentId, pin } = req.body;
+
+  if (!studentId || !pin) {
+    return res.status(400).json({ error: 'Student ID and PIN required' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    const [rows] = await connection.query(
+      'SELECT id, name, school, form, pin_hash FROM students WHERE id = ?',
+      [studentId]
+    );
+
+    if (!rows.length) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const student = rows[0];
+    const match = await bcrypt.compare(String(pin), student.pin_hash);
+
+    if (!match) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // ✅ Send student info (NO PIN)
+    res.json({
+      id: student.id,
+      name: student.name,
+      school: student.school,
+      form: student.form
+    });
+
+  } catch (err) {
+    logError(err);
+    res.status(500).json({ error: 'Server error' });
+  } finally {
+    connection.release();
+  }
+});
+
+
+// ================= PARENT RESULTS =================
+app.get('/api/parent/results/:studentId', async (req, res) => {
+  const { studentId } = req.params;
+  const connection = await pool.getConnection();
+
+  try {
+    const [rows] = await connection.query(
+      `
+      SELECT 
+        e.name AS exam_name,
+        r.term,
+        r.year,
+        r.subject,
+        COALESCE(r.score, (r.ca + r.midterm + r.endterm)) AS total,
+        r.position,
+        (
+          SELECT COUNT(DISTINCT r2.student_id)
+          FROM results r2
+          WHERE r2.exam_id = r.exam_id
+        ) AS totalStudents
+      FROM results r
+      JOIN exams e ON r.exam_id = e.id
+      WHERE r.student_id = ?
+      ORDER BY r.year DESC, r.term DESC
+      `,
+      [studentId]
+    );
+
+    // 🔄 Transform to match frontend structure
+    const examsMap = {};
+
+    for (const row of rows) {
+      const key = `${row.exam_name}_${row.term}_${row.year}`;
+
+      if (!examsMap[key]) {
+        examsMap[key] = {
+          exam_name: row.exam_name,
+          term: row.term,
+          year: row.year,
+          position: row.position,
+          totalStudents: row.totalStudents,
+          subjects: []
+        };
+      }
+
+      examsMap[key].subjects.push({
+        subject: row.subject,
+        total: row.total
+      });
+    }
+
+    res.json(Object.values(examsMap));
+
+  } catch (err) {
+    logError(err);
+    res.status(500).json({ error: 'Failed to fetch results' });
+  } finally {
+    connection.release();
+  }
+});
 
 
 
