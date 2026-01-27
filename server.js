@@ -548,9 +548,14 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
       }
 
       examsMap[key].subjects.push({
-        subject: row.subject,
-        total: row.total
-      });
+		subject: row.subject,
+		ca: row.ca || 0,
+		midterm: row.midterm || 0,
+		endterm: row.endterm || 0,
+		total: row.total,
+		position: row.position || '-'
+});
+
     }
 
     res.json(Object.values(examsMap));
