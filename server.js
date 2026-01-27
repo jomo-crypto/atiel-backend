@@ -509,26 +509,30 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
 
   try {
     const [rows] = await connection.query(
-      `
-      SELECT 
-        e.name AS exam_name,
-        r.term,
-        r.year,
-        r.subject,
-        COALESCE(r.score, (r.ca + r.midterm + r.endterm)) AS total,
-        r.position,
-        (
-          SELECT COUNT(DISTINCT r2.student_id)
-          FROM results r2
-          WHERE r2.exam_id = r.exam_id
-        ) AS totalStudents
-      FROM results r
-      JOIN exams e ON r.exam_id = e.id
-      WHERE r.student_id = ?
-      ORDER BY r.year DESC, r.term DESC
-      `,
-      [studentId]
-    );
+  `
+  SELECT 
+    e.name AS exam_name,
+    r.term,
+    r.year,
+    r.subject,
+    r.ca,
+    r.midterm,
+    r.endterm,
+    (r.ca + r.midterm + r.endterm) AS total,
+    r.position,
+    (
+      SELECT COUNT(DISTINCT r2.student_id)
+      FROM results r2
+      WHERE r2.exam_id = r.exam_id
+    ) AS totalStudents
+  FROM results r
+  JOIN exams e ON r.exam_id = e.id
+  WHERE r.student_id = ?
+  ORDER BY r.year DESC, r.term DESC
+  `,
+  [studentId]
+);
+
 
     // 🔄 Transform to match frontend structure
     const examsMap = {};
