@@ -545,73 +545,55 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
 
   try {
     const [rows] = await connection.query(
-  `
-		  SELECT 
-		  e.name AS exam_name,
-		  r.term,
-		  r.year,
-		  r.subject,
-		  r.ca,
-		  r.midterm,
-		  r.endterm,
-		  (r.ca + r.midterm + r.endterm) AS total,
-		  r.position,
-		  r.grade,
-		  r.remarks,
-		  (
-			SELECT COUNT(DISTINCT r2.student_id)
-			FROM results r2
-			WHERE r2.exam_id = r.exam_id
-		  ) AS totalStudents
-		FROM results r
-		JOIN exams e ON r.exam_id = e.id
-		WHERE r.student_id = ?
-		ORDER BY r.year DESC, r.term DESC
+      `
+      SELECT 
+        e.name AS exam_name,
+        r.term,
+        r.year,
+        r.subject,
+        r.ca,
+        r.midterm,
+        r.endterm,
+        r.total_score AS total,
+        r.position,
+        r.grade,
+        r.remarks
+      FROM results r
+      JOIN exams e ON r.exam_id = e.id
+      WHERE r.student_id = ?
+      ORDER BY r.year DESC, r.term DESC, e.name
+      `,
+      [studentId]
+    );
 
-  `,
-  [studentId]
-);
-
-
-    // 🔄 Transform to match frontend structure
-    const examsMap = {};
-
+    // Transform into frontend-friendly structure
+    const report = {};
     for (const row of rows) {
-      const key = `${row.exam_name}_${row.term}_${row.year}`;
+      if (!report[row.year]) report[row.year] = {};
+      if (!report[row.year][row.term]) report[row.year][row.term] = {};
+      if (!report[row.year][row.term][row.exam_name]) report[row.year][row.term][row.exam_name] = [];
 
-      if (!examsMap[key]) {
-        examsMap[key] = {
-          exam_name: row.exam_name,
-          term: row.term,
-          year: row.year,
-          position: row.position,
-          totalStudents: row.totalStudents,
-          subjects: []
-        };
-      }
-
-      examsMap[key].subjects.push({
-		subject: row.subject,
-		ca: row.ca || 0,
-		midterm: row.midterm || 0,
-		endterm: row.endterm || 0,
-		grade: row.grade,
-		remarks: row.remarks,
-		total: row.total,
-		position: row.position || '-'
-});
-
+      report[row.year][row.term][row.exam_name].push({
+        subject: row.subject,
+        ca: row.ca || 0,
+        midterm: row.midterm || 0,
+        endterm: row.endterm || 0,
+        total: row.total || 0,
+        grade: row.grade || '-',
+        remarks: row.remarks || '-',
+        position: row.position || '-'
+      });
     }
 
-    res.json(Object.values(examsMap));
-
+    res.json(report);
   } catch (err) {
-    logError(err);
+    console.error(err);
     res.status(500).json({ error: 'Failed to fetch results' });
   } finally {
     connection.release();
   }
 });
+
 
 
 
