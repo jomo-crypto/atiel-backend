@@ -399,26 +399,62 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
         ) t
         ON r.student_id = t.student_id AND r.exam_id = ?
         SET r.total_score = t.total,
-            r.average_score = t.total / t.subjects_count
+            r.average_score = ROUND(t.total / t.subjects_count, 2)
         `,
         [exId, exId]
       );
 
-      // 3️⃣ assign grade based on average_score
-      await connection.query(
-        `
-        UPDATE results
-        SET grade = CASE
-          WHEN average_score >= 80 THEN 'A'
-          WHEN average_score >= 70 THEN 'B'
-          WHEN average_score >= 60 THEN 'C'
-          WHEN average_score >= 50 THEN 'D'
-          ELSE 'F'
-        END
-        WHERE exam_id = ?
-        `,
-        [exId]
-      );
+    // 3️⃣ Assign grade & remarks based on OFFICIAL JCE / MSCE rules
+		await connection.query(
+		`
+		UPDATE results r
+		JOIN students s ON r.student_id = s.id
+		SET
+		  r.grade = CASE
+
+			/* ================= JCE (Form 1 & 2) ================= */
+			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 90 AND 100 THEN 'A'
+			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 70 AND 89 THEN 'B'
+			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 60 AND 69 THEN 'C'
+			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 45 AND 59 THEN 'D'
+			WHEN s.form IN ('Form 1','Form 2') THEN 'F'
+
+			/* ================= MSCE (Form 3 & 4) ================= */
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 90 AND 100 THEN '1'
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 75 AND 89 THEN '2'
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 70 AND 74 THEN '3'
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 65 AND 69 THEN '4'
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 60 AND 64 THEN '5'
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 55 AND 59 THEN '6'
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 50 AND 54 THEN '7'
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 45 AND 49 THEN '8'
+			ELSE '9'
+		  END,
+
+		  r.remarks = CASE
+
+			/* JCE remarks */
+			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 90 AND 100 THEN 'Excellent'
+			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 70 AND 89 THEN 'Very Good'
+			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 60 AND 69 THEN 'Good'
+			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 45 AND 59 THEN 'Average'
+			WHEN s.form IN ('Form 1','Form 2') THEN 'Fail'
+
+			/* MSCE remarks */
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score >= 75 THEN 'Distinction'
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 70 AND 74 THEN 'Strong Credit'
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 65 AND 69 THEN 'Strong Credit'
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 60 AND 64 THEN 'Credit'
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 55 AND 59 THEN 'Credit'
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 50 AND 54 THEN 'Strong Pass'
+			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 45 AND 49 THEN 'Pass'
+			ELSE 'Fail'
+		  END
+		WHERE r.exam_id = ?
+		`,
+		[exId]
+		);
+
 
       // 4️⃣ positions per form
       for (const form of examFormMap[exId]) {
@@ -510,25 +546,28 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
   try {
     const [rows] = await connection.query(
   `
-  SELECT 
-    e.name AS exam_name,
-    r.term,
-    r.year,
-    r.subject,
-    r.ca,
-    r.midterm,
-    r.endterm,
-    (r.ca + r.midterm + r.endterm) AS total,
-    r.position,
-    (
-      SELECT COUNT(DISTINCT r2.student_id)
-      FROM results r2
-      WHERE r2.exam_id = r.exam_id
-    ) AS totalStudents
-  FROM results r
-  JOIN exams e ON r.exam_id = e.id
-  WHERE r.student_id = ?
-  ORDER BY r.year DESC, r.term DESC
+		  SELECT 
+		  e.name AS exam_name,
+		  r.term,
+		  r.year,
+		  r.subject,
+		  r.ca,
+		  r.midterm,
+		  r.endterm,
+		  (r.ca + r.midterm + r.endterm) AS total,
+		  r.position,
+		  r.grade,
+		  r.remarks,
+		  (
+			SELECT COUNT(DISTINCT r2.student_id)
+			FROM results r2
+			WHERE r2.exam_id = r.exam_id
+		  ) AS totalStudents
+		FROM results r
+		JOIN exams e ON r.exam_id = e.id
+		WHERE r.student_id = ?
+		ORDER BY r.year DESC, r.term DESC
+
   `,
   [studentId]
 );
@@ -556,6 +595,8 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
 		ca: row.ca || 0,
 		midterm: row.midterm || 0,
 		endterm: row.endterm || 0,
+		grade: row.grade,
+		remarks: row.remarks,
 		total: row.total,
 		position: row.position || '-'
 });
