@@ -566,44 +566,33 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
       [studentId]
     );
 
-    // Transform into frontend-friendly structure
+    const data = Array.isArray(rows) ? rows : [];
+
+    if (!data.length) return res.json({}); // no results yet
+
     const report = {};
 
-    for (const row of rows) {
-      // 1️⃣ Year
-      if (!report[row.year]) report[row.year] = {};
+    for (const row of data) {
+      const { year, term, exam_name } = row;
 
-      // 2️⃣ Term
-      if (!report[row.year][row.term]) report[row.year][row.term] = {};
+      if (!report[year]) report[year] = {};
+      if (!report[year][`Term${term}`]) report[year][`Term${term}`] = {};
+      if (!report[year][`Term${term}`][exam_name]) report[year][`Term${term}`][exam_name] = [];
 
-      // 3️⃣ Exam (Midterm / End of Term / etc.)
-			  if (!report[row.year][row.term][row.exam_name]) {
-		  report[row.year][row.term][row.exam_name] = [];
-		}
-
-
-      // Push subject details
-				  report[row.year][row.term][row.exam_name].push({
-			  subject: row.subject,
-			  ca: row.ca || 0,
-			  midterm: row.midterm || 0,
-			  endterm: row.endterm || 0,
-			  total: row.total || 0,
-			  grade: row.grade || '-',
-			  remarks: row.remarks || '-',
-			  position: row.position || '-'
-			});
-
-
-      // Update exam totals and average
-      const examData = report[row.year][row.term][row.exam_name];
-      examData.total_score += row.total || 0;
-      examData.average_score = parseFloat(
-        (examData.total_score / examData.subjects.length).toFixed(2)
-      );
+      report[year][`Term${term}`][exam_name].push({
+        subject: row.subject,
+        ca: row.ca || 0,
+        midterm: row.midterm || 0,
+        endterm: row.endterm || 0,
+        total: row.total || 0,
+        position: row.position || '-',
+        grade: row.grade || '-',
+        remarks: row.remarks || '-'
+      });
     }
 
-    res.json(report);
+    res.json({ student: { id: studentId }, report });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch results' });
