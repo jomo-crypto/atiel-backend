@@ -554,7 +554,7 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
         r.ca,
         r.midterm,
         r.endterm,
-        r.total_score AS total,
+        (r.ca + r.midterm + r.endterm) AS total
         r.position,
         r.grade,
         r.remarks
@@ -577,25 +577,23 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
       if (!report[row.year][row.term]) report[row.year][row.term] = {};
 
       // 3️⃣ Exam (Midterm / End of Term / etc.)
-      if (!report[row.year][row.term][row.exam_name]) {
-        report[row.year][row.term][row.exam_name] = {
-          subjects: [],
-          total_score: 0,      // total per exam (sum of subject totals)
-          average_score: 0     // average per exam
-        };
-      }
+			  if (!report[row.year][row.term][row.exam_name]) {
+		  report[row.year][row.term][row.exam_name] = [];
+		}
+
 
       // Push subject details
-      report[row.year][row.term][row.exam_name].subjects.push({
-        subject: row.subject,
-        ca: row.ca || 0,
-        midterm: row.midterm || 0,
-        endterm: row.endterm || 0,
-        total: row.total || 0,
-        grade: row.grade || '-',
-        remarks: row.remarks || '-',
-        position: row.position || '-'
-      });
+				  report[row.year][row.term][row.exam_name].push({
+			  subject: row.subject,
+			  ca: row.ca || 0,
+			  midterm: row.midterm || 0,
+			  endterm: row.endterm || 0,
+			  total: row.total || 0,
+			  grade: row.grade || '-',
+			  remarks: row.remarks || '-',
+			  position: row.position || '-'
+			});
+
 
       // Update exam totals and average
       const examData = report[row.year][row.term][row.exam_name];
