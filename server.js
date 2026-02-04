@@ -554,7 +554,7 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
         r.ca,
         r.midterm,
         r.endterm,
-        (r.ca + r.midterm + r.endterm) AS total
+        (r.ca + r.midterm + r.endterm) AS total,
         r.position,
         r.grade,
         r.remarks
