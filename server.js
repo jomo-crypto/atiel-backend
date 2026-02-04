@@ -548,8 +548,8 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
       `
       SELECT 
         e.name AS exam_name,
-        r.term,
-        r.year,
+        e.term,
+        e.year,
         r.subject,
         r.ca,
         r.midterm,
@@ -561,19 +561,32 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
       FROM results r
       JOIN exams e ON r.exam_id = e.id
       WHERE r.student_id = ?
-      ORDER BY r.year DESC, r.term DESC, e.name
+      ORDER BY r.year DESC, r.term ASC, e.name ASC
       `,
       [studentId]
     );
 
     // Transform into frontend-friendly structure
     const report = {};
-    for (const row of rows) {
-      if (!report[row.year]) report[row.year] = {};
-      if (!report[row.year][row.term]) report[row.year][row.term] = {};
-      if (!report[row.year][row.term][row.exam_name]) report[row.year][row.term][row.exam_name] = [];
 
-      report[row.year][row.term][row.exam_name].push({
+    for (const row of rows) {
+      // 1️⃣ Year
+      if (!report[row.year]) report[row.year] = {};
+
+      // 2️⃣ Term
+      if (!report[row.year][row.term]) report[row.year][row.term] = {};
+
+      // 3️⃣ Exam (Midterm / End of Term / etc.)
+      if (!report[row.year][row.term][row.exam_name]) {
+        report[row.year][row.term][row.exam_name] = {
+          subjects: [],
+          total_score: 0,      // total per exam (sum of subject totals)
+          average_score: 0     // average per exam
+        };
+      }
+
+      // Push subject details
+      report[row.year][row.term][row.exam_name].subjects.push({
         subject: row.subject,
         ca: row.ca || 0,
         midterm: row.midterm || 0,
@@ -583,6 +596,13 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
         remarks: row.remarks || '-',
         position: row.position || '-'
       });
+
+      // Update exam totals and average
+      const examData = report[row.year][row.term][row.exam_name];
+      examData.total_score += row.total || 0;
+      examData.average_score = parseFloat(
+        (examData.total_score / examData.subjects.length).toFixed(2)
+      );
     }
 
     res.json(report);
@@ -593,7 +613,6 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
     connection.release();
   }
 });
-
 
 
 
