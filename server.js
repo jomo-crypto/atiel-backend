@@ -562,10 +562,15 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
 // Helper for component-specific results (CA, Midterm, Endterm)
 // ────────────────────────────────────────────────
 async function getResultsByComponent(studentId, component) {
-  const scoreColumn = component;
+  const scoreColumn = component; // 'ca', 'midterm', 'endterm'
   const connection = await pool.getConnection();
   try {
     console.log(`[DEBUG] Fetching ${component} for student ${studentId}`);
+
+    // Validate column to prevent SQL injection (optional safety)
+    if (!['ca', 'midterm', 'endterm'].includes(scoreColumn)) {
+      throw new Error('Invalid component');
+    }
 
     const [rows] = await connection.query(
       `
@@ -591,20 +596,20 @@ async function getResultsByComponent(studentId, component) {
 
     const report = {};
     rows.forEach(row => {
-      const yearKey = String(row.year);
-      const termKey = `Term ${row.term}`;
+      const yearKey = String(row.year || 'Unknown');
+      const termKey = `Term ${row.term || 'Unknown'}`;
 
       if (!report[yearKey]) report[yearKey] = {};
       if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
 
-      const examKey = String(row.exam_name).trim();
+      const examKey = String(row.exam_name || 'Unknown').trim();
 
       if (!report[yearKey][termKey][examKey]) {
         report[yearKey][termKey][examKey] = [];
       }
 
       report[yearKey][termKey][examKey].push({
-        subject: row.subject,
+        subject: row.subject || 'Unknown',
         score: Number(row.score) || 0,
         position: row.position || '-',
         grade: row.grade || '-',
@@ -615,7 +620,7 @@ async function getResultsByComponent(studentId, component) {
 
     return { report };
   } catch (err) {
-    console.error(`[ERROR] ${component} failed for ${studentId}:`, err.message);
+    console.error(`[ERROR] ${component} endpoint failed for ${studentId}:`, err.message);
     return { report: {} }; // return empty report instead of crashing
   } finally {
     connection.release();
