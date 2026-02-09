@@ -562,7 +562,7 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
 // Helper for component-specific results (CA, Midterm, Endterm)
 // ────────────────────────────────────────────────
 async function getResultsByComponent(studentId, component) {
-  const scoreColumn = component; // 'ca', 'midterm', 'endterm'
+  const scoreColumn = component;
   const connection = await pool.getConnection();
   try {
     console.log(`[DEBUG] Fetching ${component} for student ${studentId}`);
@@ -582,7 +582,6 @@ async function getResultsByComponent(studentId, component) {
       FROM results r
       JOIN exams e ON r.exam_id = e.id
       WHERE r.student_id = ?
-        AND r.${scoreColumn} IS NOT NULL  -- skip if score is null
       ORDER BY e.year DESC, e.term ASC, e.name ASC, r.subject ASC
       `,
       [studentId]
@@ -591,14 +590,14 @@ async function getResultsByComponent(studentId, component) {
     console.log(`[DEBUG] Found ${rows.length} rows for ${component}`);
 
     const report = {};
-    for (const row of rows) {
-      const yearKey = row.year.toString();
+    rows.forEach(row => {
+      const yearKey = String(row.year);
       const termKey = `Term ${row.term}`;
 
       if (!report[yearKey]) report[yearKey] = {};
       if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
 
-      const examKey = row.exam_name.trim();
+      const examKey = String(row.exam_name).trim();
 
       if (!report[yearKey][termKey][examKey]) {
         report[yearKey][termKey][examKey] = [];
@@ -606,18 +605,18 @@ async function getResultsByComponent(studentId, component) {
 
       report[yearKey][termKey][examKey].push({
         subject: row.subject,
-        score: row.score || 0,
+        score: Number(row.score) || 0,
         position: row.position || '-',
         grade: row.grade || '-',
         remarks: row.remarks || '-',
         exam_locked: Boolean(row.locked)
       });
-    }
+    });
 
     return { report };
   } catch (err) {
-    console.error(`[ERROR] ${component} endpoint failed for ${studentId}:`, err);
-    throw err; // let caller handle 500
+    console.error(`[ERROR] ${component} failed for ${studentId}:`, err.message);
+    return { report: {} }; // return empty report instead of crashing
   } finally {
     connection.release();
   }
