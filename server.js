@@ -1,4 +1,3 @@
-
 require('dotenv').config();
 const express = require('express');
 const mysql = require('mysql2/promise');
@@ -92,7 +91,6 @@ app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password)
     return res.status(400).json({ error: 'Username and password required' });
-
   const connection = await pool.getConnection();
   try {
     const [rows] = await connection.query(
@@ -100,10 +98,8 @@ app.post('/api/admin/login', async (req, res) => {
       [username]
     );
     if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
-
     const match = await bcrypt.compare(password, rows[0].password_hash);
     if (!match) return res.status(401).json({ error: 'Invalid credentials' });
-
     const token = jwt.sign(
       { id: rows[0].id },
       process.env.JWT_SECRET,
@@ -122,29 +118,22 @@ app.post('/api/admin/login', async (req, res) => {
 app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
   const { name, school, pin } = req.body;
   let { form } = req.body;
-
   if (!name || !school || !form || !pin) {
     return res.status(400).json({ error: 'All fields required' });
   }
-
-  // normalize form input
   form = form.trim().replace(/\s+/g, ' ');
-
   const allowedForms = ['Form 1', 'Form 2', 'Form 3', 'Form 4'];
   if (!allowedForms.includes(form)) {
     return res.status(400).json({ error: 'Invalid form. Use Form 1–4 only.' });
   }
-
   const connection = await pool.getConnection();
   try {
     const id = await generateStudentId(school);
     const pinHash = await bcrypt.hash(String(pin), 10);
-
     await connection.query(
       'INSERT INTO students (id, name, school, form, pin_hash) VALUES (?, ?, ?, ?, ?)',
       [id, name, school, form, pinHash]
     );
-
     res.json({ message: 'Student added', studentId: id });
   } catch (err) {
     logError(err);
@@ -154,33 +143,22 @@ app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
   }
 });
 
-
 app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
   const { form, school } = req.query;
   const connection = await pool.getConnection();
-
   try {
-    // Base query
     let query = 'SELECT id, name, school, form FROM students WHERE 1';
     const params = [];
-
-    // Filter by form if provided
     if (form && form.trim() !== '') {
       query += ' AND form = ?';
       params.push(form.trim());
     }
-
-    // Filter by school if provided (case-insensitive)
     if (school && school.trim() !== '') {
       query += ' AND LOWER(school) = LOWER(?)';
       params.push(school.trim());
     }
-
-    // Order by name
     query += ' ORDER BY name';
-
     console.log('STUDENTS SQL:', query, params);
-
     const [rows] = await connection.query(query, params);
     res.json(rows);
   } catch (err) {
@@ -190,7 +168,6 @@ app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
     connection.release();
   }
 });
-
 
 app.delete('/api/admin/students/:id', verifyAdminToken, async (req, res) => {
   const { id } = req.params;
@@ -228,17 +205,32 @@ app.post('/api/admin/students/:id/regenerate-pin', verifyAdminToken, async (req,
 
 // ================= EXAMS =================
 app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
-  const { name, term, year } = req.body;
-  if (!name || !term || !year)
-    return res.status(400).json({ error: 'Missing fields' });
-
+  const { examType, termNumber, year } = req.body;
+  // Validate input
+  if (!examType || !['midterm', 'endterm'].includes(examType)) {
+    return res.status(400).json({ error: "examType must be 'midterm' or 'endterm'" });
+  }
+  if (!termNumber || ![1, 2, 3].includes(Number(termNumber))) {
+    return res.status(400).json({ error: "termNumber must be 1, 2, or 3" });
+  }
+  if (!year || isNaN(year)) {
+    return res.status(400).json({ error: "year is required and must be a number" });
+  }
+  // Auto-generate clean name
+  const name = `${examType === 'midterm' ? 'Mid Term' : 'End Term'} ${termNumber} ${year}`;
   const connection = await pool.getConnection();
   try {
-    await connection.query(
+    const [result] = await connection.query(
       'INSERT INTO exams (name, term, year) VALUES (?, ?, ?)',
-      [name, term, year]
+      [name, termNumber, year]
     );
-    res.json({ message: 'Exam created' });
+    res.json({
+      message: 'Exam created successfully',
+      examId: result.insertId,
+      name,
+      term: termNumber,
+      year
+    });
   } catch (err) {
     logError(err);
     res.status(500).json({ error: 'Failed to create exam' });
@@ -251,7 +243,7 @@ app.get('/api/admin/exams', verifyAdminToken, async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const [rows] = await connection.query(
-      'SELECT * FROM exams ORDER BY year DESC, term ASC'
+      'SELECT * FROM exams ORDER BY year DESC, term ASC, name ASC'
     );
     res.json(rows);
   } catch (err) {
@@ -274,7 +266,7 @@ app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
   res.json(subjectsByForm[form] || []);
 });
 
-/// ================= GET RESULTS =================
+// ================= GET RESULTS (ADMIN) =================
 app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
   const { form, term, year } = req.query;
   const connection = await pool.getConnection();
@@ -287,7 +279,6 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
       WHERE 1
     `;
     const params = [];
-
     if (form) {
       query += ' AND s.form = ?';
       params.push(form);
@@ -300,7 +291,6 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
       query += ' AND r.year = ?';
       params.push(year);
     }
-
     const [rows] = await connection.query(query, params);
     res.json(rows);
   } catch (err) {
@@ -311,26 +301,17 @@ app.get('/api/admin/results', verifyAdminToken, async (req, res) => {
   }
 });
 
-
-
-
-
 // ================= BULK RESULTS (UPSERT + FULL CALCULATION) =================
 console.log('🔥 BULK RESULTS ROUTE VERSION LOADED');
-
 app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
   const results = req.body;
-
   console.log('Bulk results request received:', results);
-
   if (!Array.isArray(results) || results.length === 0) {
     return res.status(400).json({ error: 'No results provided' });
   }
-
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
-
     const examFormMap = {}; // { exam_id: Set of forms }
 
     // ================= UPSERT =================
@@ -345,23 +326,17 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
         term,
         year
       } = r;
-
       if (!student_id || !subject || !exam_id || !term || !year) {
         throw new Error(`Missing required fields for ${student_id} ${subject}`);
       }
-
-      // Get student form
       const [studentRow] = await connection.query(
         'SELECT form FROM students WHERE id = ?',
         [student_id]
       );
       if (!studentRow.length) throw new Error(`Student not found: ${student_id}`);
       const form = studentRow[0].form;
-
       if (!examFormMap[exam_id]) examFormMap[exam_id] = new Set();
       examFormMap[exam_id].add(form);
-
-      // UPSERT
       await connection.query(
         `
         INSERT INTO results
@@ -381,13 +356,11 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
 
     // ================= CALCULATE SCORE, TOTAL_SCORE, AVERAGE, GRADE & POSITIONS =================
     for (const exId of Object.keys(examFormMap)) {
-      // 1️⃣ score per subject
       await connection.query(
         `UPDATE results SET score = ca + midterm + endterm WHERE exam_id = ?`,
         [exId]
       );
 
-      // 2️⃣ total_score per student
       await connection.query(
         `
         UPDATE results r
@@ -404,59 +377,47 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
         [exId, exId]
       );
 
-    // 3️⃣ Assign grade & remarks based on OFFICIAL JCE / MSCE rules
-		await connection.query(
-		`
-		UPDATE results r
-		JOIN students s ON r.student_id = s.id
-		SET
-		  r.grade = CASE
+      await connection.query(
+        `
+        UPDATE results r
+        JOIN students s ON r.student_id = s.id
+        SET
+          r.grade = CASE
+            WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 90 AND 100 THEN 'A'
+            WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 70 AND 89 THEN 'B'
+            WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 60 AND 69 THEN 'C'
+            WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 45 AND 59 THEN 'D'
+            WHEN s.form IN ('Form 1','Form 2') THEN 'F'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 90 AND 100 THEN '1'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 75 AND 89 THEN '2'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 70 AND 74 THEN '3'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 65 AND 69 THEN '4'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 60 AND 64 THEN '5'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 55 AND 59 THEN '6'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 50 AND 54 THEN '7'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 45 AND 49 THEN '8'
+            ELSE '9'
+          END,
+          r.remarks = CASE
+            WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 90 AND 100 THEN 'Excellent'
+            WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 70 AND 89 THEN 'Very Good'
+            WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 60 AND 69 THEN 'Good'
+            WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 45 AND 59 THEN 'Average'
+            WHEN s.form IN ('Form 1','Form 2') THEN 'Fail'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score >= 75 THEN 'Distinction'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 70 AND 74 THEN 'Strong Credit'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 65 AND 69 THEN 'Strong Credit'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 60 AND 64 THEN 'Credit'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 55 AND 59 THEN 'Credit'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 50 AND 54 THEN 'Strong Pass'
+            WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 45 AND 49 THEN 'Pass'
+            ELSE 'Fail'
+          END
+        WHERE r.exam_id = ?
+        `,
+        [exId]
+      );
 
-			/* ================= JCE (Form 1 & 2) ================= */
-			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 90 AND 100 THEN 'A'
-			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 70 AND 89 THEN 'B'
-			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 60 AND 69 THEN 'C'
-			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 45 AND 59 THEN 'D'
-			WHEN s.form IN ('Form 1','Form 2') THEN 'F'
-
-			/* ================= MSCE (Form 3 & 4) ================= */
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 90 AND 100 THEN '1'
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 75 AND 89 THEN '2'
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 70 AND 74 THEN '3'
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 65 AND 69 THEN '4'
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 60 AND 64 THEN '5'
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 55 AND 59 THEN '6'
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 50 AND 54 THEN '7'
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 45 AND 49 THEN '8'
-			ELSE '9'
-		  END,
-
-		  r.remarks = CASE
-
-			/* JCE remarks */
-			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 90 AND 100 THEN 'Excellent'
-			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 70 AND 89 THEN 'Very Good'
-			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 60 AND 69 THEN 'Good'
-			WHEN s.form IN ('Form 1','Form 2') AND r.average_score BETWEEN 45 AND 59 THEN 'Average'
-			WHEN s.form IN ('Form 1','Form 2') THEN 'Fail'
-
-			/* MSCE remarks */
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score >= 75 THEN 'Distinction'
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 70 AND 74 THEN 'Strong Credit'
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 65 AND 69 THEN 'Strong Credit'
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 60 AND 64 THEN 'Credit'
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 55 AND 59 THEN 'Credit'
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 50 AND 54 THEN 'Strong Pass'
-			WHEN s.form IN ('Form 3','Form 4') AND r.average_score BETWEEN 45 AND 49 THEN 'Pass'
-			ELSE 'Fail'
-		  END
-		WHERE r.exam_id = ?
-		`,
-		[exId]
-		);
-
-
-      // 4️⃣ positions per form
       for (const form of examFormMap[exId]) {
         await connection.query(`SET @pos := 0`);
         await connection.query(
@@ -482,7 +443,6 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
     res.json({
       message: 'Results saved successfully with score, total_score, average_score, grade, and position calculated'
     });
-
   } catch (err) {
     await connection.rollback();
     logError(err);
@@ -498,37 +458,29 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
 // ================= PARENT LOGIN =================
 app.post('/api/parent/login', async (req, res) => {
   const { studentId, pin } = req.body;
-
   if (!studentId || !pin) {
     return res.status(400).json({ error: 'Student ID and PIN required' });
   }
-
   const connection = await pool.getConnection();
   try {
     const [rows] = await connection.query(
       'SELECT id, name, school, form, pin_hash FROM students WHERE id = ?',
       [studentId]
     );
-
     if (!rows.length) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-
     const student = rows[0];
     const match = await bcrypt.compare(String(pin), student.pin_hash);
-
     if (!match) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-
-    // ✅ Send student info (NO PIN)
     res.json({
       id: student.id,
       name: student.name,
       school: student.school,
       form: student.form
     });
-
   } catch (err) {
     logError(err);
     res.status(500).json({ error: 'Server error' });
@@ -537,16 +489,16 @@ app.post('/api/parent/login', async (req, res) => {
   }
 });
 
-
 // ================= PARENT RESULTS =================
 app.get('/api/parent/results/:studentId', async (req, res) => {
   const { studentId } = req.params;
-  const connection = await pool.getConnection();
+  console.log(`[DEBUG] Fetching results for student: ${studentId}`);
 
+  const connection = await pool.getConnection();
   try {
     const [rows] = await connection.query(
       `
-      SELECT 
+      SELECT
         e.name AS exam_name,
         e.term,
         e.year,
@@ -566,20 +518,26 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
       [studentId]
     );
 
-    const data = Array.isArray(rows) ? rows : [];
+    console.log(`[DEBUG] Found ${rows.length} rows for ${studentId}`);
 
-    if (!data.length) return res.json({}); // no results yet
+    const data = Array.isArray(rows) ? rows : [];
+    if (!data.length) return res.json({});
 
     const report = {};
-
     for (const row of data) {
-      const { year, term, exam_name } = row;
+      const yearKey = row.year.toString();
+      const termKey = `Term ${row.term}`; // clean key: "Term 1"
 
-      if (!report[year]) report[year] = {};
-      if (!report[year][`Term${term}`]) report[year][`Term${term}`] = {};
-      if (!report[year][`Term${term}`][exam_name]) report[year][`Term${term}`][exam_name] = [];
+      if (!report[yearKey]) report[yearKey] = {};
+      if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
 
-      report[year][`Term${term}`][exam_name].push({
+      const examKey = row.exam_name.trim();
+
+      if (!report[yearKey][termKey][examKey]) {
+        report[yearKey][termKey][examKey] = [];
+      }
+
+      report[yearKey][termKey][examKey].push({
         subject: row.subject,
         ca: row.ca || 0,
         midterm: row.midterm || 0,
@@ -592,7 +550,6 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
     }
 
     res.json({ student: { id: studentId }, report });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch results' });
@@ -602,25 +559,24 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
 });
 
 // ────────────────────────────────────────────────
-// Helper function used by the three new endpoints
+// Helper for component-specific results (CA, Midterm, Endterm)
 // ────────────────────────────────────────────────
 async function getResultsByComponent(studentId, component) {
-  // component can be: 'ca', 'midterm', 'endterm'
   const scoreColumn = component;
-
   const connection = await pool.getConnection();
   try {
     const [rows] = await connection.query(
       `
       SELECT
-        e.name        AS exam_name,
+        e.name AS exam_name,
         e.term,
         e.year,
         r.subject,
         r.${scoreColumn} AS score,
         r.position,
         r.grade,
-        r.remarks
+        r.remarks,
+        e.locked
       FROM results r
       JOIN exams e ON r.exam_id = e.id
       WHERE r.student_id = ?
@@ -631,19 +587,25 @@ async function getResultsByComponent(studentId, component) {
 
     const report = {};
     for (const row of rows) {
-      const { year, term, exam_name } = row;
-      if (!report[year]) report[year] = {};
-      if (!report[year][`Term${term}`]) report[year][`Term${term}`] = {};
-      if (!report[year][`Term${term}`][exam_name]) {
-        report[year][`Term${term}`][exam_name] = [];
+      const yearKey = row.year.toString();
+      const termKey = `Term ${row.term}`;
+
+      if (!report[yearKey]) report[yearKey] = {};
+      if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
+
+      const examKey = row.exam_name.trim();
+
+      if (!report[yearKey][termKey][examKey]) {
+        report[yearKey][termKey][examKey] = [];
       }
 
-      report[year][`Term${term}`][exam_name].push({
+      report[yearKey][termKey][examKey].push({
         subject: row.subject,
-        score:   row.score || 0,
+        score: row.score || 0,
         position: row.position || '-',
-        grade:   row.grade   || '-',
-        remarks: row.remarks || '-'
+        grade: row.grade || '-',
+        remarks: row.remarks || '-',
+        exam_locked: Boolean(row.locked)
       });
     }
 
@@ -654,9 +616,8 @@ async function getResultsByComponent(studentId, component) {
 }
 
 // ────────────────────────────────────────────────
-// NEW ENDPOINTS
+// Component-specific endpoints
 // ────────────────────────────────────────────────
-
 app.get('/api/parent/results/:studentId/ca', async (req, res) => {
   try {
     const data = await getResultsByComponent(req.params.studentId, 'ca');
@@ -687,16 +648,12 @@ app.get('/api/parent/results/:studentId/endterm', async (req, res) => {
   }
 });
 
-
-
 // ================= SERVER =================
 const PORT = process.env.PORT;
-
 if (!PORT) {
   console.error('❌ PORT environment variable is not set');
   process.exit(1);
 }
-
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server running on port ${PORT}`);
 });
