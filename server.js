@@ -601,6 +601,92 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
   }
 });
 
+// ────────────────────────────────────────────────
+// Helper function used by the three new endpoints
+// ────────────────────────────────────────────────
+async function getResultsByComponent(studentId, component) {
+  // component can be: 'ca', 'midterm', 'endterm'
+  const scoreColumn = component;
+
+  const connection = await pool.getConnection();
+  try {
+    const [rows] = await connection.query(
+      `
+      SELECT
+        e.name        AS exam_name,
+        e.term,
+        e.year,
+        r.subject,
+        r.${scoreColumn} AS score,
+        r.position,
+        r.grade,
+        r.remarks
+      FROM results r
+      JOIN exams e ON r.exam_id = e.id
+      WHERE r.student_id = ?
+      ORDER BY e.year DESC, e.term ASC, e.name ASC, r.subject ASC
+      `,
+      [studentId]
+    );
+
+    const report = {};
+    for (const row of rows) {
+      const { year, term, exam_name } = row;
+      if (!report[year]) report[year] = {};
+      if (!report[year][`Term${term}`]) report[year][`Term${term}`] = {};
+      if (!report[year][`Term${term}`][exam_name]) {
+        report[year][`Term${term}`][exam_name] = [];
+      }
+
+      report[year][`Term${term}`][exam_name].push({
+        subject: row.subject,
+        score:   row.score || 0,
+        position: row.position || '-',
+        grade:   row.grade   || '-',
+        remarks: row.remarks || '-'
+      });
+    }
+
+    return { report };
+  } finally {
+    connection.release();
+  }
+}
+
+// ────────────────────────────────────────────────
+// NEW ENDPOINTS
+// ────────────────────────────────────────────────
+
+app.get('/api/parent/results/:studentId/ca', async (req, res) => {
+  try {
+    const data = await getResultsByComponent(req.params.studentId, 'ca');
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load CA results' });
+  }
+});
+
+app.get('/api/parent/results/:studentId/midterm', async (req, res) => {
+  try {
+    const data = await getResultsByComponent(req.params.studentId, 'midterm');
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load Midterm results' });
+  }
+});
+
+app.get('/api/parent/results/:studentId/endterm', async (req, res) => {
+  try {
+    const data = await getResultsByComponent(req.params.studentId, 'endterm');
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load Endterm results' });
+  }
+});
+
 
 
 // ================= SERVER =================
