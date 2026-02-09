@@ -523,33 +523,32 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
     const data = Array.isArray(rows) ? rows : [];
     if (!data.length) return res.json({});
 
-    const report = {};
-    for (const row of data) {
-      const yearKey = row.year.toString();
-      const termKey = `Term ${row.term}`; // clean key: "Term 1"
+	   const report = {};
+	rows.forEach(row => {
+	  const yearKey = String(row.year || 'Unknown');
+	  const termKey = `Term ${String(row.term || 'Unknown')}`;
 
-      if (!report[yearKey]) report[yearKey] = {};
-      if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
+	  if (!report[yearKey]) report[yearKey] = {};
+	  if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
 
-      const examKey = row.exam_name.trim();
+	  const examKey = String(row.exam_name || 'Unknown').trim();
 
-      if (!report[yearKey][termKey][examKey]) {
-        report[yearKey][termKey][examKey] = [];
-      }
+	  if (!report[yearKey][termKey][examKey]) {
+		report[yearKey][termKey][examKey] = [];
+	  }
 
-      report[yearKey][termKey][examKey].push({
-        subject: row.subject,
-        ca: row.ca || 0,
-        midterm: row.midterm || 0,
-        endterm: row.endterm || 0,
-        total: row.total || 0,
-        position: row.position || '-',
-        grade: row.grade || '-',
-        remarks: row.remarks || '-'
-      });
-    }
-
-    res.json({ student: { id: studentId }, report });
+	  report[yearKey][termKey][examKey].push({
+		subject: String(row.subject || 'Unknown'),
+		ca: Number(row.ca) || 0,
+		midterm: Number(row.midterm) || 0,
+		endterm: Number(row.endterm) || 0,
+		total: Number(row.total) || 0,
+		position: row.position || '-',
+		grade: row.grade || '-',
+		remarks: row.remarks || '-'
+	  });
+	});
+	res.json({ student: { id: studentId }, report });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch results' });
@@ -562,15 +561,10 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
 // Helper for component-specific results (CA, Midterm, Endterm)
 // ────────────────────────────────────────────────
 async function getResultsByComponent(studentId, component) {
-  const scoreColumn = component; // 'ca', 'midterm', 'endterm'
+  const scoreColumn = component;
   const connection = await pool.getConnection();
   try {
-    console.log(`[DEBUG] Fetching ${component} for student ${studentId}`);
-
-    // Validate column to prevent SQL injection (optional safety)
-    if (!['ca', 'midterm', 'endterm'].includes(scoreColumn)) {
-      throw new Error('Invalid component');
-    }
+    console.log(`[DEBUG] Fetching ${component} for ${studentId}`);
 
     const [rows] = await connection.query(
       `
@@ -597,7 +591,7 @@ async function getResultsByComponent(studentId, component) {
     const report = {};
     rows.forEach(row => {
       const yearKey = String(row.year || 'Unknown');
-      const termKey = `Term ${row.term || 'Unknown'}`;
+      const termKey = `Term ${String(row.term || 'Unknown')}`;
 
       if (!report[yearKey]) report[yearKey] = {};
       if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
@@ -609,7 +603,7 @@ async function getResultsByComponent(studentId, component) {
       }
 
       report[yearKey][termKey][examKey].push({
-        subject: row.subject || 'Unknown',
+        subject: String(row.subject || 'Unknown'),
         score: Number(row.score) || 0,
         position: row.position || '-',
         grade: row.grade || '-',
@@ -620,13 +614,12 @@ async function getResultsByComponent(studentId, component) {
 
     return { report };
   } catch (err) {
-    console.error(`[ERROR] ${component} endpoint failed for ${studentId}:`, err.message);
-    return { report: {} }; // return empty report instead of crashing
+    console.error(`[ERROR] ${component} failed for ${studentId}:`, err.message);
+    return { report: {} };
   } finally {
     connection.release();
   }
 }
-
 // ────────────────────────────────────────────────
 // Component-specific endpoints
 // ────────────────────────────────────────────────
