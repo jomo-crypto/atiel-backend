@@ -562,9 +562,11 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
 // Helper for component-specific results (CA, Midterm, Endterm)
 // ────────────────────────────────────────────────
 async function getResultsByComponent(studentId, component) {
-  const scoreColumn = component;
+  const scoreColumn = component; // 'ca', 'midterm', 'endterm'
   const connection = await pool.getConnection();
   try {
+    console.log(`[DEBUG] Fetching ${component} for student ${studentId}`);
+
     const [rows] = await connection.query(
       `
       SELECT
@@ -580,10 +582,13 @@ async function getResultsByComponent(studentId, component) {
       FROM results r
       JOIN exams e ON r.exam_id = e.id
       WHERE r.student_id = ?
+        AND r.${scoreColumn} IS NOT NULL  -- skip if score is null
       ORDER BY e.year DESC, e.term ASC, e.name ASC, r.subject ASC
       `,
       [studentId]
     );
+
+    console.log(`[DEBUG] Found ${rows.length} rows for ${component}`);
 
     const report = {};
     for (const row of rows) {
@@ -610,6 +615,9 @@ async function getResultsByComponent(studentId, component) {
     }
 
     return { report };
+  } catch (err) {
+    console.error(`[ERROR] ${component} endpoint failed for ${studentId}:`, err);
+    throw err; // let caller handle 500
   } finally {
     connection.release();
   }
