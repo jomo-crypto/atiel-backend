@@ -10,9 +10,13 @@ const app = express();
 app.use(helmet());
 app.use(cors({
   origin: [
-    'https://atielschools.com',
-    'http://localhost:3000'
-  ]
+    'https://atielschools.com',      // ← make sure this is here (with https)
+    'http://localhost:3000',         // for local dev
+    'https://atielschools.com'       // sometimes add again if trailing slash issues
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],  // add this if missing
+  allowedHeaders: ['Content-Type', 'Authorization'],     // add this if missing
+  credentials: true                                      // add if using cookies/auth
 }));
 app.use(express.json());
 
