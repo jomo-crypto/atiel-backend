@@ -36,10 +36,11 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: 4,
-  maxIdle: 4,
-  idleTimeout: 30000,
-  queueLimit: 0
+  connectionLimit: 2,         // ← only 2 concurrent connections (safe under 6)
+  maxIdle: 2,                 // ← max 2 idle
+  idleTimeout: 60000,         // 60 seconds
+  queueLimit: 50,             // queue up to 50 requests instead of failing
+  connectTimeout: 10000,      // 10s timeout to avoid hanging
 });
 
 // ================= HELPER =================
