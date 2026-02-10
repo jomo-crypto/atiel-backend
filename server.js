@@ -559,6 +559,7 @@ async function getResultsByComponent(studentId, component) {
   const connection = await pool.getConnection();
   try {
     console.log(`[DEBUG] Fetching ${component} for ${studentId}`);
+
     const [rows] = await connection.query(
       `
       SELECT
@@ -571,7 +572,7 @@ async function getResultsByComponent(studentId, component) {
         r.grade,
         r.remarks,
         e.locked,
-        s.form   // ← add this to know JCE or MSCE
+        s.form
       FROM results r
       JOIN exams e ON r.exam_id = e.id
       JOIN students s ON r.student_id = s.id
@@ -601,7 +602,7 @@ async function getResultsByComponent(studentId, component) {
       let grade = '-';
       let remarks = '-';
       const score = Number(row.score) || 0;
-      const isJCE = row.form.includes('Form 1') || row.form.includes('Form 2');
+      const isJCE = row.form?.includes('Form 1') || row.form?.includes('Form 2');
 
       if (score >= 90) {
         grade = isJCE ? 'A' : '1';
@@ -616,7 +617,7 @@ async function getResultsByComponent(studentId, component) {
         grade = isJCE ? 'D' : '4';
         remarks = isJCE ? 'Average' : 'Strong Credit';
       } else {
-        grade = isJCE ? 'F' : '5';  // or adjust to 9 for fail
+        grade = isJCE ? 'F' : '9';
         remarks = isJCE ? 'Fail' : 'Fail';
       }
 
@@ -624,8 +625,8 @@ async function getResultsByComponent(studentId, component) {
         subject: String(row.subject || 'Unknown'),
         score: score,
         position: row.position || '-',
-        grade: grade,          // ← now calculated
-        remarks: remarks,      // ← now calculated
+        grade: grade,
+        remarks: remarks,
         exam_locked: Boolean(row.locked)
       });
     });
