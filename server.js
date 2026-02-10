@@ -584,29 +584,32 @@ async function getResultsByComponent(studentId, component) {
 
     console.log(`[DEBUG] Found ${rows.length} rows for ${component}`);
 
-    // Calculate per-component position (class rank based on this score)
-    const positionMap = {}; // { exam_id + form: { student_id: rank } }
+    // Calculate class position for this component (per exam + form)
+    const positionMap = {}; // { exam_name_form: { student_id: rank } }
 
-    // First pass: group and rank per exam + form
-    const examFormGroups = {};
+    // Group rows by exam + form
+    const groups = {};
     rows.forEach(row => {
       const key = `${row.exam_name}_${row.form}`;
-      if (!examFormGroups[key]) examFormGroups[key] = [];
-      examFormGroups[key].push(row);
+      if (!groups[key]) groups[key] = [];
+      groups[key].push({ ...row, student_id: studentId }); // include student_id
     });
 
-    Object.values(examFormGroups).forEach(group => {
-      // Sort by score DESC
+    // Rank within each group
+    Object.values(groups).forEach(group => {
+      // Sort by score descending
       group.sort((a, b) => Number(b.score) - Number(a.score));
-      let rank = 1;
-      group.forEach((row, idx) => {
-        if (idx > 0 && Number(row.score) === Number(group[idx - 1].score)) {
-          // Tie: same rank as previous
+
+      let currentRank = 1;
+      group.forEach((row, index) => {
+        // Handle ties: same score = same rank
+        if (index > 0 && Number(row.score) === Number(group[index - 1].score)) {
+          // keep same rank as previous
         } else {
-          rank = idx + 1;
+          currentRank = index + 1;
         }
         const mapKey = `${row.exam_name}_${row.form}_${row.student_id}`;
-        positionMap[mapKey] = rank;
+        positionMap[mapKey] = currentRank;
       });
     });
 
@@ -627,7 +630,7 @@ async function getResultsByComponent(studentId, component) {
       const mapKey = `${row.exam_name}_${row.form}_${studentId}`;
       const position = positionMap[mapKey] || '-';
 
-      // Grade & remarks (from previous logic)
+      // Grade & remarks (from previous fix)
       let grade = '-';
       let remarks = '-';
       const score = Number(row.score) || 0;
