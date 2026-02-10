@@ -47,7 +47,6 @@ const pool = mysql.createPool({
 const logError = (err) => console.error(new Date().toISOString(), err);
 
 
-ensureResultsColumns().catch(logError);
 
 // ================= MIDDLEWARE =================
 const verifyAdminToken = (req, res, next) => {
