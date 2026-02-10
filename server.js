@@ -625,7 +625,8 @@ Object.keys(groups).forEach(key => {
 });
 
     const report = {};
-   rows.forEach(row => {
+  
+  rows.forEach(row => {
   const yearKey = String(row.year || 'Unknown');
   const termKey = `Term ${String(row.term || 'Unknown')}`;
 
@@ -638,12 +639,16 @@ Object.keys(groups).forEach(key => {
     report[yearKey][termKey][examKey] = [];
   }
 
+  // Position lookup & formatting as "rank/total"
   const formKey = `${row.exam_name}_${row.form}`;
+  const mapKey = `${row.exam_name}_${row.form}_${studentId || 'unknown'}`;
+  const rank = positionMap[mapKey] || '-';
   const totalInGroup = totalStudentsMap[formKey] || '-';
-  const positionDisplay = position !== '-' && totalInGroup !== '-' 
-    ? `${position}/${totalInGroup}` 
+  const positionDisplay = (rank !== '-' && totalInGroup !== '-') 
+    ? `${rank}/${totalInGroup}` 
     : '-';
 
+  // Grade & remarks calculation (unchanged)
   let grade = '-';
   let remarks = '-';
   const score = Number(row.score) || 0;
@@ -669,7 +674,7 @@ Object.keys(groups).forEach(key => {
   report[yearKey][termKey][examKey].push({
     subject: String(row.subject || 'Unknown'),
     score: score,
-    position: positionDisplay,   // ← now "5/25" format
+    position: positionDisplay,   // Now "5/25"
     grade: grade,
     remarks: remarks,
     exam_locked: Boolean(row.locked)
