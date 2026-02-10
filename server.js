@@ -8,7 +8,7 @@ const helmet = require('helmet');
 
 const app = express();
 app.use(helmet());
-const cors = require('cors');
+
 
 app.use(cors({
   origin: [
