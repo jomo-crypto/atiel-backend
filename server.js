@@ -412,25 +412,33 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
         [exId]
       );
 
-      for (const form of examFormMap[exId]) {
-        await connection.query(`SET @pos := 0`);
-        await connection.query(
-          `
-          UPDATE results r
-          JOIN (
-            SELECT r.student_id, (@pos := @pos + 1) AS rank
-            FROM results r
-            JOIN students s ON r.student_id = s.id
-            WHERE r.exam_id = ? AND s.form = ?
-            GROUP BY r.student_id
-            ORDER BY SUM(r.score) DESC
-          ) ranked
-          ON r.student_id = ranked.student_id AND r.exam_id = ?
-          SET r.position = ranked.rank
-          `,
-          [exId, form, exId]
-        );
-      }
+      // Group by both form and school
+const formSchoolPairs = new Set();
+rows.forEach(r => {
+  formSchoolPairs.add(`${r.form}_${r.school}`);
+});
+
+for (const pair of formSchoolPairs) {
+  const [form, school] = pair.split('_');
+
+  await connection.query(`SET @pos := 0`);
+  await connection.query(
+    `
+    UPDATE results r
+    JOIN (
+      SELECT r.student_id, (@pos := @pos + 1) AS rank
+      FROM results r
+      JOIN students s ON r.student_id = s.id
+      WHERE r.exam_id = ? AND s.form = ? AND s.school = ?
+      GROUP BY r.student_id
+      ORDER BY SUM(r.score) DESC
+    ) ranked
+    ON r.student_id = ranked.student_id AND r.exam_id = ?
+    SET r.position = ranked.rank
+    `,
+    [exId, form, school, exId]
+  );
+}
     }
 
     await connection.commit();
