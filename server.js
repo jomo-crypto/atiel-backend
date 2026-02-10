@@ -584,31 +584,38 @@ async function getResultsByComponent(studentId, component) {
 
     console.log(`[DEBUG] Found ${rows.length} rows for ${component}`);
 
-    // Calculate class position for this component (per exam + form)
-    const positionMap = {}; // { exam_name_form: { student_id: rank } }
+    // Calculate class position and total students per exam + form
+    const positionMap = {};     // { exam_name_form_studentId: rank }
+    const totalStudentsMap = {}; // { exam_name_form: total count }
 
     // Group rows by exam + form
     const groups = {};
     rows.forEach(row => {
       const key = `${row.exam_name}_${row.form}`;
       if (!groups[key]) groups[key] = [];
-      groups[key].push({ ...row, student_id: studentId }); // include student_id
+      groups[key].push(row);
     });
 
-    // Rank within each group
-    Object.values(groups).forEach(group => {
+    // Rank and count per group
+    Object.keys(groups).forEach(key => {
+      const group = groups[key];
+      const [examName, form] = key.split('_');
+
+      // Total students in this form/exam
+      totalStudentsMap[key] = group.length;
+
       // Sort by score descending
       group.sort((a, b) => Number(b.score) - Number(a.score));
 
       let currentRank = 1;
       group.forEach((row, index) => {
-        // Handle ties: same score = same rank
+        // Handle ties
         if (index > 0 && Number(row.score) === Number(group[index - 1].score)) {
-          // keep same rank as previous
+          // keep same rank
         } else {
           currentRank = index + 1;
         }
-        const mapKey = `${row.exam_name}_${row.form}_${row.student_id}`;
+        const mapKey = `${examName}_${form}_${studentId}`;
         positionMap[mapKey] = currentRank;
       });
     });
@@ -627,10 +634,13 @@ async function getResultsByComponent(studentId, component) {
         report[yearKey][termKey][examKey] = [];
       }
 
+      const formKey = `${row.exam_name}_${row.form}`;
       const mapKey = `${row.exam_name}_${row.form}_${studentId}`;
-      const position = positionMap[mapKey] || '-';
+      const rank = positionMap[mapKey] || '-';
+      const total = totalStudentsMap[formKey] || '-';
+      const positionDisplay = rank !== '-' && total !== '-' ? `${rank}/${total}` : '-';
 
-      // Grade & remarks (from previous fix)
+      // Grade & remarks (already from previous fix)
       let grade = '-';
       let remarks = '-';
       const score = Number(row.score) || 0;
@@ -656,7 +666,7 @@ async function getResultsByComponent(studentId, component) {
       report[yearKey][termKey][examKey].push({
         subject: String(row.subject || 'Unknown'),
         score: score,
-        position: position,
+        position: positionDisplay,  // Now "22/51" format
         grade: grade,
         remarks: remarks,
         exam_locked: Boolean(row.locked)
