@@ -36,32 +36,17 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: 2,         // ← only 2 at most (very safe under 6)
-  maxIdle: 1,                 // ← keep almost no idle connections
-  idleTimeout: 60000,         // 60 seconds
-  queueLimit: 100,            // queue requests instead of failing
-  connectTimeout: 15000       // 15s timeout
+  connectionLimit: 1,         // ← only 1 connection ever
+  maxIdle: 1,
+  idleTimeout: 120000,        // 2 minutes
+  queueLimit: 200,            // queue requests
+  connectTimeout: 30000
 });
 
 // ================= HELPER =================
 const logError = (err) => console.error(new Date().toISOString(), err);
 
-const ensureResultsColumns = async () => {
-  const connection = await pool.getConnection();
-  try {
-    const [cols] = await connection.query(`SHOW COLUMNS FROM results LIKE 'total_score'`);
-    if (!cols.length) {
-      console.log('Adding total_score and position columns...');
-      await connection.query(`
-        ALTER TABLE results
-        ADD COLUMN total_score INT DEFAULT 0,
-        ADD COLUMN position INT DEFAULT NULL
-      `);
-    }
-  } finally {
-    connection.release();
-  }
-};
+
 ensureResultsColumns().catch(logError);
 
 // ================= MIDDLEWARE =================
