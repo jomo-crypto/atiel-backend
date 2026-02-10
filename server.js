@@ -8,15 +8,18 @@ const helmet = require('helmet');
 
 const app = express();
 app.use(helmet());
+const cors = require('cors');
+
 app.use(cors({
   origin: [
-    'https://atielschools.com',      // ← make sure this is here (with https)
-    'http://localhost:3000',         // for local dev
-    'https://atielschools.com'       // sometimes add again if trailing slash issues
+    'https://atielschools.com',          // your live site
+    'http://localhost:3000',             // local development
+    'https://localhost:3000'             // if you ever use https locally
   ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],  // add this if missing
-  allowedHeaders: ['Content-Type', 'Authorization'],     // add this if missing
-  credentials: true                                      // add if using cookies/auth
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],   // allowed HTTP methods
+  allowedHeaders: ['Content-Type', 'Authorization'],      // needed for JWT / Bearer token
+  credentials: true,                                      // if you ever use cookies/sessions
+  optionsSuccessStatus: 200                               // for old browsers
 }));
 app.use(express.json());
 
