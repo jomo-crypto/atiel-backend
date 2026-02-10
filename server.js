@@ -584,6 +584,32 @@ async function getResultsByComponent(studentId, component) {
 
     console.log(`[DEBUG] Found ${rows.length} rows for ${component}`);
 
+    // Calculate per-component position (class rank based on this score)
+    const positionMap = {}; // { exam_id + form: { student_id: rank } }
+
+    // First pass: group and rank per exam + form
+    const examFormGroups = {};
+    rows.forEach(row => {
+      const key = `${row.exam_name}_${row.form}`;
+      if (!examFormGroups[key]) examFormGroups[key] = [];
+      examFormGroups[key].push(row);
+    });
+
+    Object.values(examFormGroups).forEach(group => {
+      // Sort by score DESC
+      group.sort((a, b) => Number(b.score) - Number(a.score));
+      let rank = 1;
+      group.forEach((row, idx) => {
+        if (idx > 0 && Number(row.score) === Number(group[idx - 1].score)) {
+          // Tie: same rank as previous
+        } else {
+          rank = idx + 1;
+        }
+        const mapKey = `${row.exam_name}_${row.form}_${row.student_id}`;
+        positionMap[mapKey] = rank;
+      });
+    });
+
     const report = {};
     rows.forEach(row => {
       const yearKey = String(row.year || 'Unknown');
@@ -598,7 +624,10 @@ async function getResultsByComponent(studentId, component) {
         report[yearKey][termKey][examKey] = [];
       }
 
-      // Calculate grade & remarks based on this component's score
+      const mapKey = `${row.exam_name}_${row.form}_${studentId}`;
+      const position = positionMap[mapKey] || '-';
+
+      // Grade & remarks (from previous logic)
       let grade = '-';
       let remarks = '-';
       const score = Number(row.score) || 0;
@@ -624,7 +653,7 @@ async function getResultsByComponent(studentId, component) {
       report[yearKey][termKey][examKey].push({
         subject: String(row.subject || 'Unknown'),
         score: score,
-        position: row.position || '-',
+        position: position,
         grade: grade,
         remarks: remarks,
         exam_locked: Boolean(row.locked)
