@@ -44,6 +44,7 @@ const pool = mysql.createPool({
 });
 
 // ================= HELPER =================
+
 const logError = (err) => console.error(new Date().toISOString(), err);
 
 
@@ -593,93 +594,87 @@ async function getResultsByComponent(studentId, component) {
     console.log(`[DEBUG] Found ${rows.length} rows for ${component}`);
 
     // Calculate class position and total students per exam + form
-    const positionMap = {};     // { exam_name_form_studentId: rank }
-    const totalStudentsMap = {}; // { exam_name_form: total count }
+const positionMap = {};     // { exam_name_form_studentId: rank }
+const totalStudentsMap = {}; // { exam_name_form: total count }
 
-    // Group rows by exam + form
-    const groups = {};
-    rows.forEach(row => {
-      const key = `${row.exam_name}_${row.form}`;
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(row);
-    });
+// Group rows by exam + form
+const groups = {};
+rows.forEach(row => {
+  const key = `${row.exam_name}_${row.form}`;
+  if (!groups[key]) groups[key] = [];
+  groups[key].push(row);
+});
 
-    // Rank and count per group
-    Object.keys(groups).forEach(key => {
-      const group = groups[key];
-      const [examName, form] = key.split('_');
+// Rank and count per group
+Object.keys(groups).forEach(key => {
+  const group = groups[key];
+  totalStudentsMap[key] = group.length;  // ← TOTAL STUDENTS IN THIS GROUP
 
-      // Total students in this form/exam
-      totalStudentsMap[key] = group.length;
+  group.sort((a, b) => Number(b.score) - Number(a.score));
 
-      // Sort by score descending
-      group.sort((a, b) => Number(b.score) - Number(a.score));
-
-      let currentRank = 1;
-      group.forEach((row, index) => {
-        // Handle ties
-        if (index > 0 && Number(row.score) === Number(group[index - 1].score)) {
-          // keep same rank
-        } else {
-          currentRank = index + 1;
-        }
-        const mapKey = `${examName}_${form}_${studentId}`;
-        positionMap[mapKey] = currentRank;
-      });
-    });
+  let currentRank = 1;
+  group.forEach((row, index) => {
+    if (index > 0 && Number(row.score) === Number(group[index - 1].score)) {
+      // tie: same rank
+    } else {
+      currentRank = index + 1;
+    }
+    const mapKey = `${row.exam_name}_${row.form}_${studentId}`;
+    positionMap[mapKey] = currentRank;
+  });
+});
 
     const report = {};
-    rows.forEach(row => {
-      const yearKey = String(row.year || 'Unknown');
-      const termKey = `Term ${String(row.term || 'Unknown')}`;
+   rows.forEach(row => {
+  const yearKey = String(row.year || 'Unknown');
+  const termKey = `Term ${String(row.term || 'Unknown')}`;
 
-      if (!report[yearKey]) report[yearKey] = {};
-      if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
+  if (!report[yearKey]) report[yearKey] = {};
+  if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
 
-      const examKey = String(row.exam_name || 'Unknown').trim();
+  const examKey = String(row.exam_name || 'Unknown').trim();
 
-      if (!report[yearKey][termKey][examKey]) {
-        report[yearKey][termKey][examKey] = [];
-      }
+  if (!report[yearKey][termKey][examKey]) {
+    report[yearKey][termKey][examKey] = [];
+  }
 
-      const formKey = `${row.exam_name}_${row.form}`;
-      const mapKey = `${row.exam_name}_${row.form}_${studentId}`;
-      const rank = positionMap[mapKey] || '-';
-      const total = totalStudentsMap[formKey] || '-';
-      const positionDisplay = rank !== '-' && total !== '-' ? `${rank}/${total}` : '-';
+  const formKey = `${row.exam_name}_${row.form}`;
+  const totalInGroup = totalStudentsMap[formKey] || '-';
+  const positionDisplay = position !== '-' && totalInGroup !== '-' 
+    ? `${position}/${totalInGroup}` 
+    : '-';
 
-      // Grade & remarks (already from previous fix)
-      let grade = '-';
-      let remarks = '-';
-      const score = Number(row.score) || 0;
-      const isJCE = row.form?.includes('Form 1') || row.form?.includes('Form 2');
+  let grade = '-';
+  let remarks = '-';
+  const score = Number(row.score) || 0;
+  const isJCE = row.form?.includes('Form 1') || row.form?.includes('Form 2');
 
-      if (score >= 90) {
-        grade = isJCE ? 'A' : '1';
-        remarks = isJCE ? 'Excellent' : 'Distinction';
-      } else if (score >= 70) {
-        grade = isJCE ? 'B' : '2';
-        remarks = isJCE ? 'Very Good' : 'Distinction';
-      } else if (score >= 60) {
-        grade = isJCE ? 'C' : '3';
-        remarks = isJCE ? 'Good' : 'Strong Credit';
-      } else if (score >= 45) {
-        grade = isJCE ? 'D' : '4';
-        remarks = isJCE ? 'Average' : 'Strong Credit';
-      } else {
-        grade = isJCE ? 'F' : '9';
-        remarks = isJCE ? 'Fail' : 'Fail';
-      }
+  if (score >= 90) {
+    grade = isJCE ? 'A' : '1';
+    remarks = isJCE ? 'Excellent' : 'Distinction';
+  } else if (score >= 70) {
+    grade = isJCE ? 'B' : '2';
+    remarks = isJCE ? 'Very Good' : 'Distinction';
+  } else if (score >= 60) {
+    grade = isJCE ? 'C' : '3';
+    remarks = isJCE ? 'Good' : 'Strong Credit';
+  } else if (score >= 45) {
+    grade = isJCE ? 'D' : '4';
+    remarks = isJCE ? 'Average' : 'Strong Credit';
+  } else {
+    grade = isJCE ? 'F' : '9';
+    remarks = isJCE ? 'Fail' : 'Fail';
+  }
 
-      report[yearKey][termKey][examKey].push({
-        subject: String(row.subject || 'Unknown'),
-        score: score,
-        position: positionDisplay,  // Now "22/51" format
-        grade: grade,
-        remarks: remarks,
-        exam_locked: Boolean(row.locked)
-      });
-    });
+  report[yearKey][termKey][examKey].push({
+    subject: String(row.subject || 'Unknown'),
+    score: score,
+    position: positionDisplay,   // ← now "5/25" format
+    grade: grade,
+    remarks: remarks,
+    exam_locked: Boolean(row.locked)
+  });
+});
 
     return { report };
   } catch (err) {
@@ -730,4 +725,5 @@ if (!PORT) {
 }
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server running on port ${PORT}`);
+  console.log(`Server started at ${new Date().toISOString()} – ready for requests`);
 });
