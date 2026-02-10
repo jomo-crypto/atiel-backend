@@ -559,7 +559,6 @@ async function getResultsByComponent(studentId, component) {
   const connection = await pool.getConnection();
   try {
     console.log(`[DEBUG] Fetching ${component} for ${studentId}`);
-
     const [rows] = await connection.query(
       `
       SELECT
@@ -571,9 +570,11 @@ async function getResultsByComponent(studentId, component) {
         r.position,
         r.grade,
         r.remarks,
-        e.locked
+        e.locked,
+        s.form   // ← add this to know JCE or MSCE
       FROM results r
       JOIN exams e ON r.exam_id = e.id
+      JOIN students s ON r.student_id = s.id
       WHERE r.student_id = ?
       ORDER BY e.year DESC, e.term ASC, e.name ASC, r.subject ASC
       `,
@@ -596,12 +597,35 @@ async function getResultsByComponent(studentId, component) {
         report[yearKey][termKey][examKey] = [];
       }
 
+      // Calculate grade & remarks based on this component's score
+      let grade = '-';
+      let remarks = '-';
+      const score = Number(row.score) || 0;
+      const isJCE = row.form.includes('Form 1') || row.form.includes('Form 2');
+
+      if (score >= 90) {
+        grade = isJCE ? 'A' : '1';
+        remarks = isJCE ? 'Excellent' : 'Distinction';
+      } else if (score >= 70) {
+        grade = isJCE ? 'B' : '2';
+        remarks = isJCE ? 'Very Good' : 'Distinction';
+      } else if (score >= 60) {
+        grade = isJCE ? 'C' : '3';
+        remarks = isJCE ? 'Good' : 'Strong Credit';
+      } else if (score >= 45) {
+        grade = isJCE ? 'D' : '4';
+        remarks = isJCE ? 'Average' : 'Strong Credit';
+      } else {
+        grade = isJCE ? 'F' : '5';  // or adjust to 9 for fail
+        remarks = isJCE ? 'Fail' : 'Fail';
+      }
+
       report[yearKey][termKey][examKey].push({
         subject: String(row.subject || 'Unknown'),
-        score: Number(row.score) || 0,
+        score: score,
         position: row.position || '-',
-        grade: row.grade || '-',
-        remarks: row.remarks || '-',
+        grade: grade,          // ← now calculated
+        remarks: remarks,      // ← now calculated
         exam_locked: Boolean(row.locked)
       });
     });
