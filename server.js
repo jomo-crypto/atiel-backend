@@ -413,15 +413,31 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
         [exId]
       );
 
-      // Group by both form and school
+// Group by both form and school (use upserted results to get student_ids)
 const formSchoolPairs = new Set();
-rows.forEach(r => {
-  formSchoolPairs.add(`${r.form}_${r.school}`);
-});
+const studentForms = {}; // cache form/school to avoid repeated queries
 
+for (const r of results) {
+  const studentId = r.student_id;
+  if (!studentForms[studentId]) {
+    const [studentRow] = await connection.query(
+      'SELECT form, school FROM students WHERE id = ?',
+      [studentId]
+    );
+    if (studentRow.length === 0) {
+      console.warn(`Student ${studentId} not found during ranking - skipping`);
+      continue;
+    }
+    const { form, school } = studentRow[0];
+    studentForms[studentId] = { form, school };
+    formSchoolPairs.add(`${form}_${school}`);
+  }
+}
+}
+
+// Now rank per form+school
 for (const pair of formSchoolPairs) {
   const [form, school] = pair.split('_');
-
   await connection.query(`SET @pos := 0`);
   await connection.query(
     `
