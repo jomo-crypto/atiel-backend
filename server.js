@@ -496,7 +496,6 @@ app.post('/api/parent/login', async (req, res) => {
 app.get('/api/parent/results/:studentId', async (req, res) => {
   const { studentId } = req.params;
   console.log(`[DEBUG] Fetching results for student: ${studentId}`);
-
   const connection = await pool.getConnection();
   try {
     const [rows] = await connection.query(
@@ -520,38 +519,72 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
       `,
       [studentId]
     );
-
     console.log(`[DEBUG] Found ${rows.length} rows for ${studentId}`);
-
     const data = Array.isArray(rows) ? rows : [];
-    if (!data.length) return res.json({});
+    if (!data.length) return res.json({ student: { id: studentId }, report: {}, classPosition: '-' });
 
-	   const report = {};
-	rows.forEach(row => {
-	  const yearKey = String(row.year || 'Unknown');
-	  const termKey = `Term ${String(row.term || 'Unknown')}`;
+    const report = {};
+    const classPositions = {}; // per exam_name
 
-	  if (!report[yearKey]) report[yearKey] = {};
-	  if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
+    // Group by exam to calculate position + total per exam
+    const examGroups = {};
+    rows.forEach(row => {
+      const examKey = row.exam_name;
+      if (!examGroups[examKey]) examGroups[examKey] = [];
+      examGroups[examKey].push(row);
+    });
 
-	  const examKey = String(row.exam_name || 'Unknown').trim();
+    // For each exam, calculate student's rank + total (using stored position as base)
+    Object.keys(examGroups).forEach(examKey => {
+      const group = examGroups[examKey];
+      // Assume all rows in group have same form & school (single student view)
+      const firstRow = group[0];
+      const form = firstRow.form; // need to fetch form separately if not in rows
+      const school = firstRow.school; // same
 
-	  if (!report[yearKey][termKey][examKey]) {
-		report[yearKey][termKey][examKey] = [];
-	  }
+      // Since position is stored per student/exam, take the position from first row
+      const storedPosition = group[0].position || '-';
 
-	  report[yearKey][termKey][examKey].push({
-		subject: String(row.subject || 'Unknown'),
-		ca: Number(row.ca) || 0,
-		midterm: Number(row.midterm) || 0,
-		endterm: Number(row.endterm) || 0,
-		total: Number(row.total) || 0,
-		position: row.position || '-',
-		grade: row.grade || '-',
-		remarks: row.remarks || '-'
-	  });
-	});
-	res.json({ student: { id: studentId }, report });
+      // Count unique students in this exam (for total)
+      const uniqueStudents = new Set(group.map(r => r.student_id)).size;
+      const total = uniqueStudents > 0 ? uniqueStudents : '-';
+
+      classPositions[examKey] = (storedPosition !== '-' && total !== '-') 
+        ? `${storedPosition}/${total}` 
+        : '-';
+    });
+
+    // Build report as before
+    rows.forEach(row => {
+      const yearKey = String(row.year || 'Unknown');
+      const termKey = `Term ${String(row.term || 'Unknown')}`;
+      if (!report[yearKey]) report[yearKey] = {};
+      if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
+      const examKey = String(row.exam_name || 'Unknown').trim();
+      if (!report[yearKey][termKey][examKey]) {
+        report[yearKey][termKey][examKey] = [];
+      }
+      report[yearKey][termKey][examKey].push({
+        subject: String(row.subject || 'Unknown'),
+        ca: Number(row.ca) || 0,
+        midterm: Number(row.midterm) || 0,
+        endterm: Number(row.endterm) || 0,
+        total: Number(row.total) || 0,
+        position: row.position || '-',
+        grade: row.grade || '-',
+        remarks: row.remarks || '-'
+      });
+    });
+
+    // Return with classPosition for the first exam (or all if you want)
+    // For simplicity, use the first exam's position (you can change to match active exam later)
+    const firstExamPosition = Object.values(classPositions)[0] || '-';
+
+    res.json({ 
+      student: { id: studentId },
+      classPosition: firstExamPosition,  // Position for the main/current exam
+      report 
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch results' });
@@ -568,7 +601,6 @@ async function getResultsByComponent(studentId, component) {
   const connection = await pool.getConnection();
   try {
     console.log(`[DEBUG] Fetching ${component} for ${studentId}`);
-
     const [rows] = await connection.query(
       `
       SELECT
@@ -590,101 +622,112 @@ async function getResultsByComponent(studentId, component) {
       `,
       [studentId]
     );
-
     console.log(`[DEBUG] Found ${rows.length} rows for ${component}`);
 
     // Calculate class position and total students per exam + form
-const positionMap = {};     // { exam_name_form_studentId: rank }
-const totalStudentsMap = {}; // { exam_name_form: total count }
+    const positionMap = {}; // { exam_name_form_studentId: rank }
+    const totalStudentsMap = {}; // { exam_name_form: total count }
 
-// Group rows by exam + form
-const groups = {};
-rows.forEach(row => {
-  const key = `${row.exam_name}_${row.form}`;
-  if (!groups[key]) groups[key] = [];
-  groups[key].push(row);
-});
+    // Group rows by exam + form
+    const groups = {};
+    rows.forEach(row => {
+      const key = `${row.exam_name}_${row.form}`;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(row);
+    });
 
-// Rank and count per group
-Object.keys(groups).forEach(key => {
-  const group = groups[key];
-  totalStudentsMap[key] = group.length;  // ← TOTAL STUDENTS IN THIS GROUP
+    // Rank and count per group
+    Object.keys(groups).forEach(key => {
+      const group = groups[key];
+      totalStudentsMap[key] = group.length; // TOTAL STUDENTS IN THIS GROUP
 
-  group.sort((a, b) => Number(b.score) - Number(a.score));
+      group.sort((a, b) => Number(b.score) - Number(a.score));
 
-  let currentRank = 1;
-  group.forEach((row, index) => {
-    if (index > 0 && Number(row.score) === Number(group[index - 1].score)) {
-      // tie: same rank
-    } else {
-      currentRank = index + 1;
-    }
-    const mapKey = `${row.exam_name}_${row.form}_${studentId}`;
-    positionMap[mapKey] = currentRank;
-  });
-});
+      let currentRank = 1;
+      group.forEach((row, index) => {
+        if (index > 0 && Number(row.score) === Number(group[index - 1].score)) {
+          // tie: same rank as previous
+        } else {
+          currentRank = index + 1;
+        }
+        const mapKey = `${row.exam_name}_${row.form}_${studentId}`;
+        positionMap[mapKey] = currentRank;
+      });
+    });
 
     const report = {};
-  
-  rows.forEach(row => {
-  const yearKey = String(row.year || 'Unknown');
-  const termKey = `Term ${String(row.term || 'Unknown')}`;
 
-  if (!report[yearKey]) report[yearKey] = {};
-  if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
+    // Get the student's class position once (using first row as reference - all rows share exam/form)
+    let classPosition = '-';
+    if (rows.length > 0) {
+      const firstRow = rows[0];
+      const formKey = `${firstRow.exam_name}_${firstRow.form}`;
+      const mapKey = `${firstRow.exam_name}_${firstRow.form}_${studentId || 'unknown'}`;
+      const rank = positionMap[mapKey] || '-';
+      const totalInGroup = totalStudentsMap[formKey] || '-';
+      classPosition = (rank !== '-' && totalInGroup !== '-') 
+        ? `${rank}/${totalInGroup}` 
+        : '-';
+    }
 
-  const examKey = String(row.exam_name || 'Unknown').trim();
+    rows.forEach(row => {
+      const yearKey = String(row.year || 'Unknown');
+      const termKey = `Term ${String(row.term || 'Unknown')}`;
+      if (!report[yearKey]) report[yearKey] = {};
+      if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
+      const examKey = String(row.exam_name || 'Unknown').trim();
+      if (!report[yearKey][termKey][examKey]) {
+        report[yearKey][termKey][examKey] = [];
+      }
 
-  if (!report[yearKey][termKey][examKey]) {
-    report[yearKey][termKey][examKey] = [];
-  }
+      // Position per subject (as before)
+      const formKey = `${row.exam_name}_${row.form}`;
+      const mapKey = `${row.exam_name}_${row.form}_${studentId || 'unknown'}`;
+      const rank = positionMap[mapKey] || '-';
+      const totalInGroup = totalStudentsMap[formKey] || '-';
+      const positionDisplay = (rank !== '-' && totalInGroup !== '-') 
+        ? `${rank}/${totalInGroup}` 
+        : '-';
 
-  // Position lookup & formatting as "rank/total"
-  const formKey = `${row.exam_name}_${row.form}`;
-  const mapKey = `${row.exam_name}_${row.form}_${studentId || 'unknown'}`;
-  const rank = positionMap[mapKey] || '-';
-  const totalInGroup = totalStudentsMap[formKey] || '-';
-  const positionDisplay = (rank !== '-' && totalInGroup !== '-') 
-    ? `${rank}/${totalInGroup}` 
-    : '-';
+      // Grade & remarks (unchanged)
+      let grade = '-';
+      let remarks = '-';
+      const score = Number(row.score) || 0;
+      const isJCE = row.form?.includes('Form 1') || row.form?.includes('Form 2');
+      if (score >= 90) {
+        grade = isJCE ? 'A' : '1';
+        remarks = isJCE ? 'Excellent' : 'Distinction';
+      } else if (score >= 70) {
+        grade = isJCE ? 'B' : '2';
+        remarks = isJCE ? 'Very Good' : 'Distinction';
+      } else if (score >= 60) {
+        grade = isJCE ? 'C' : '3';
+        remarks = isJCE ? 'Good' : 'Strong Credit';
+      } else if (score >= 45) {
+        grade = isJCE ? 'D' : '4';
+        remarks = isJCE ? 'Average' : 'Strong Credit';
+      } else {
+        grade = isJCE ? 'F' : '9';
+        remarks = isJCE ? 'Fail' : 'Fail';
+      }
 
-  // Grade & remarks calculation (unchanged)
-  let grade = '-';
-  let remarks = '-';
-  const score = Number(row.score) || 0;
-  const isJCE = row.form?.includes('Form 1') || row.form?.includes('Form 2');
+      report[yearKey][termKey][examKey].push({
+        subject: String(row.subject || 'Unknown'),
+        score: score,
+        position: positionDisplay, // per-subject position
+        grade: grade,
+        remarks: remarks,
+        exam_locked: Boolean(row.locked)
+      });
+    });
 
-  if (score >= 90) {
-    grade = isJCE ? 'A' : '1';
-    remarks = isJCE ? 'Excellent' : 'Distinction';
-  } else if (score >= 70) {
-    grade = isJCE ? 'B' : '2';
-    remarks = isJCE ? 'Very Good' : 'Distinction';
-  } else if (score >= 60) {
-    grade = isJCE ? 'C' : '3';
-    remarks = isJCE ? 'Good' : 'Strong Credit';
-  } else if (score >= 45) {
-    grade = isJCE ? 'D' : '4';
-    remarks = isJCE ? 'Average' : 'Strong Credit';
-  } else {
-    grade = isJCE ? 'F' : '9';
-    remarks = isJCE ? 'Fail' : 'Fail';
-  }
-
-  report[yearKey][termKey][examKey].push({
-    subject: String(row.subject || 'Unknown'),
-    score: score,
-    position: positionDisplay,   // Now "5/25"
-    grade: grade,
-    remarks: remarks,
-    exam_locked: Boolean(row.locked)
-  });
-});
-
-    return { report };
+    return { 
+      report,
+      classPosition  // ← this is the new field for the top of the card
+    };
   } catch (err) {
     console.error(`[ERROR] ${component} failed for ${studentId}:`, err.message);
-    return { report: {} };
+    return { report: {}, classPosition: '-' };
   } finally {
     connection.release();
   }
