@@ -722,6 +722,10 @@ app.get('/api/parent/results/:studentId/endterm', async (req, res) => {
   }
 });
 
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', uptime: process.uptime() });
+});
+
 // ================= SERVER =================
 const PORT = process.env.PORT;
 if (!PORT) {
