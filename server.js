@@ -355,7 +355,6 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
         `UPDATE results SET score = ca + midterm + endterm WHERE exam_id = ?`,
         [exId]
       );
-
       await connection.query(
         `
         UPDATE results r
@@ -371,7 +370,6 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
         `,
         [exId, exId]
       );
-
       await connection.query(
         `
         UPDATE results r
@@ -413,49 +411,47 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
         [exId]
       );
 
-// Group by both form and school (use upserted results to get student_ids)
-const formSchoolPairs = new Set();
-const studentForms = {}; // cache form/school to avoid repeated queries
+      // Group by both form and school (use upserted results to get student_ids)
+      const formSchoolPairs = new Set();
+      const studentForms = {}; // cache form/school to avoid repeated queries
+      for (const r of results) {
+        const studentId = r.student_id;
+        if (!studentForms[studentId]) {
+          const [studentRow] = await connection.query(
+            'SELECT form, school FROM students WHERE id = ?',
+            [studentId]
+          );
+          if (studentRow.length === 0) {
+            console.warn(`Student ${studentId} not found during ranking - skipping`);
+            continue;
+          }
+          const { form, school } = studentRow[0];
+          studentForms[studentId] = { form, school };
+          formSchoolPairs.add(`${form}_${school}`);
+        }
+      }
 
-for (const r of results) {
-  const studentId = r.student_id;
-  if (!studentForms[studentId]) {
-    const [studentRow] = await connection.query(
-      'SELECT form, school FROM students WHERE id = ?',
-      [studentId]
-    );
-    if (studentRow.length === 0) {
-      console.warn(`Student ${studentId} not found during ranking - skipping`);
-      continue;
-    }
-    const { form, school } = studentRow[0];
-    studentForms[studentId] = { form, school };
-    formSchoolPairs.add(`${form}_${school}`);
-  }
-}
-}
-
-// Now rank per form+school
-for (const pair of formSchoolPairs) {
-  const [form, school] = pair.split('_');
-  await connection.query(`SET @pos := 0`);
-  await connection.query(
-    `
-    UPDATE results r
-    JOIN (
-      SELECT r.student_id, (@pos := @pos + 1) AS rank
-      FROM results r
-      JOIN students s ON r.student_id = s.id
-      WHERE r.exam_id = ? AND s.form = ? AND s.school = ?
-      GROUP BY r.student_id
-      ORDER BY SUM(r.score) DESC
-    ) ranked
-    ON r.student_id = ranked.student_id AND r.exam_id = ?
-    SET r.position = ranked.rank
-    `,
-    [exId, form, school, exId]
-  );
-}
+      // Now rank per form+school
+      for (const pair of formSchoolPairs) {
+        const [form, school] = pair.split('_');
+        await connection.query(`SET @pos := 0`);
+        await connection.query(
+          `
+          UPDATE results r
+          JOIN (
+            SELECT r.student_id, (@pos := @pos + 1) AS rank
+            FROM results r
+            JOIN students s ON r.student_id = s.id
+            WHERE r.exam_id = ? AND s.form = ? AND s.school = ?
+            GROUP BY r.student_id
+            ORDER BY SUM(r.score) DESC
+          ) ranked
+          ON r.student_id = ranked.student_id AND r.exam_id = ?
+          SET r.position = ranked.rank
+          `,
+          [exId, form, school, exId]
+        );
+      }
     }
 
     await connection.commit();
