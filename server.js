@@ -6,6 +6,8 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const helmet = require('helmet');
 const app = express();
+
+app.set('trust proxy', 1);   // Trust first proxy (Render's load balancer)
 app.use(helmet());
 app.use(cors({
   origin: [
