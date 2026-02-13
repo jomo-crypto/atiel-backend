@@ -41,8 +41,8 @@ const pool = mysql.createPool({
   queueLimit: 0,
   connectTimeout: 300000, // 5 minutes - extreme but tests if wakeup is the issue
   ssl: {
-    rejectUnauthorized: false // keep false for now
-  }
+  ca: require('fs').readFileSync('./aiven-ca.pem')
+}
 });
 
 // Add this right after pool creation for debug
