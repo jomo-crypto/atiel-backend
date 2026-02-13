@@ -16,5 +16,6 @@
     "helmet": "^7.0.0",
     "jsonwebtoken": "^9.0.0",
     "mysql2": "^3.16.0"
+	"express-rate-limit": "^7.4.0"
   }
 }
