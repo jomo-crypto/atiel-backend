@@ -728,62 +728,58 @@ async function getResultsByComponent(studentId, component) {
         : '-';
     }
 
-    rows.forEach(row => {
-  const yearKey = String(row.year || 'Unknown');
-  const termKey = `Term ${String(row.term || 'Unknown')}`;
-  if (!report[yearKey]) report[yearKey] = {};
-  if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
-  const examKey = String(row.exam_name || 'Unknown').trim();
-  if (!report[yearKey][termKey][examKey]) {
-    report[yearKey][termKey][examKey] = [];
-  }
+			rows.forEach(row => {
+		  const yearKey = String(row.year || 'Unknown');
+		  const termKey = `Term ${String(row.term || 'Unknown')}`;
+		  if (!report[yearKey]) report[yearKey] = {};
+		  if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
+		  const examKey = String(row.exam_name || 'Unknown').trim();
+		  if (!report[yearKey][termKey][examKey]) {
+			report[yearKey][termKey][examKey] = [];
+		  }
 
-  // First declare score (move this up!)
-  const score = Number(row.score) || 0;
+		  // First declare score
+		  const score = Number(row.score) || 0;
 
-  // Position per subject (now safe to use score)
-  const formKey = `${row.exam_name}_${row.form}`;
-  const mapKey = `${row.exam_name}_${row.form}_${studentId || 'unknown'}`;
-  const rank = positionMap[mapKey] || '-';
-  const totalInGroup = totalStudentsMap[formKey] || '-';
-  const rank = positionMap[`${row.exam_name}_${row.form}_${studentId}`] || '-';
-	const totalInGroup = totalStudentsMap[`${row.exam_name}_${row.form}`] || '-';
-	const positionDisplay = (rank !== '-' && totalInGroup !== '-')
-	  ? `${rank}/${totalInGroup}`
-	  : '-';
+		  // Position using skip ranking (from earlier calculation)
+		  const studentRank = positionMap[`${row.exam_name}_${row.form}_${studentId}`] || '-';
+		  const totalInGroup = totalStudentsMap[`${row.exam_name}_${row.form}`] || '-';
+		  const positionDisplay = (studentRank !== '-' && totalInGroup !== '-')
+			? `${studentRank}/${totalInGroup}`
+			: '-';
 
-  // Grade & remarks
-  let grade = '-';
-  let remarks = '-';
-  if (score > 0) {
-    const isJCE = row.form?.includes('Form 1') || row.form?.includes('Form 2');
-    if (score >= 90) {
-      grade = isJCE ? 'A' : '1';
-      remarks = isJCE ? 'Excellent' : 'Distinction';
-    } else if (score >= 70) {
-      grade = isJCE ? 'B' : '2';
-      remarks = isJCE ? 'Very Good' : 'Distinction';
-    } else if (score >= 60) {
-      grade = isJCE ? 'C' : '3';
-      remarks = isJCE ? 'Good' : 'Strong Credit';
-    } else if (score >= 45) {
-      grade = isJCE ? 'D' : '4';
-      remarks = isJCE ? 'Average' : 'Strong Credit';
-    } else {
-      grade = isJCE ? 'F' : '9';
-      remarks = isJCE ? 'Fail' : 'Fail';
-    }
-  }
+		  // Grade & remarks
+		  let grade = '-';
+		  let remarks = '-';
+		  if (score > 0) {
+			const isJCE = row.form?.includes('Form 1') || row.form?.includes('Form 2');
+			if (score >= 90) {
+			  grade = isJCE ? 'A' : '1';
+			  remarks = isJCE ? 'Excellent' : 'Distinction';
+			} else if (score >= 70) {
+			  grade = isJCE ? 'B' : '2';
+			  remarks = isJCE ? 'Very Good' : 'Distinction';
+			} else if (score >= 60) {
+			  grade = isJCE ? 'C' : '3';
+			  remarks = isJCE ? 'Good' : 'Strong Credit';
+			} else if (score >= 45) {
+			  grade = isJCE ? 'D' : '4';
+			  remarks = isJCE ? 'Average' : 'Strong Credit';
+			} else {
+			  grade = isJCE ? 'F' : '9';
+			  remarks = isJCE ? 'Fail' : 'Fail';
+			}
+		  }
 
-  report[yearKey][termKey][examKey].push({
-    subject: String(row.subject || 'Unknown'),
-    score: score,
-    position: positionDisplay,
-    grade: grade,
-    remarks: remarks,
-    exam_locked: Boolean(row.locked)
-  });
-});
+		  report[yearKey][termKey][examKey].push({
+			subject: String(row.subject || 'Unknown'),
+			score: score,
+			position: positionDisplay,
+			grade: grade,
+			remarks: remarks,
+			exam_locked: Boolean(row.locked)
+		  });
+		});
 
     return { 
       report,
