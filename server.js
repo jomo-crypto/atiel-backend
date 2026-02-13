@@ -321,7 +321,39 @@ app.get('/api/admin/exams', verifyAdminToken, async (req, res) => {
   } finally {
     connection.release();
   }
-});
+
+
+	// Publish / unpublish an exam (toggle published status)
+	app.put('/api/admin/exams/:id/publish', verifyAdminToken, async (req, res) => {
+	  const { id } = req.params;
+	  const { published } = req.body;
+
+	  if (typeof published !== 'boolean') {
+		return res.status(400).json({ error: 'published must be true or false' });
+	  }
+
+	  const connection = await pool.getConnection();
+	  try {
+		const [result] = await connection.query(
+		  'UPDATE exams SET published = ? WHERE id = ?',
+		  [published, id]
+		);
+
+		if (result.affectedRows === 0) {
+		  return res.status(404).json({ error: 'Exam not found' });
+		}
+
+		res.json({ 
+		  message: `Exam ${published ? 'published' : 'unpublished'} successfully` 
+		});
+	  } catch (err) {
+		logError(err);
+		res.status(500).json({ error: 'Failed to update publish status' });
+	  } finally {
+		connection.release();
+	  }
+	});
+
 // ================= SUBJECTS =================
 app.get('/api/admin/subjects', verifyAdminToken, async (req, res) => {
   const { form } = req.query;
