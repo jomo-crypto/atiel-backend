@@ -32,15 +32,38 @@ app.use((req, res, next) => {
 // ================= DATABASE =================
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
+  port: parseInt(process.env.DB_PORT || '14671'),
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: 1,         // ← only 1 connection ever
-  maxIdle: 1,
-  idleTimeout: 120000,        // 2 minutes
-  queueLimit: 200,            // queue requests
-  connectTimeout: 30000
+  connectionLimit: 10,
+  queueLimit: 0,
+  connectTimeout: 300000, // 5 minutes - extreme but tests if wakeup is the issue
+  ssl: {
+    rejectUnauthorized: false // keep false for now
+  }
+});
+
+// Add this right after pool creation for debug
+pool.on('connection', (connection) => {
+  console.log('[DEBUG] New connection established to Aiven');
+});
+
+pool.on('error', (err) => {
+  console.error('[POOL ERROR]', err);
+});
+
+app.get('/test-db', async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    const [rows] = await connection.query('SELECT 1');
+    connection.release();
+    res.json({ status: 'connected', rows });
+  } catch (err) {
+    console.error('[TEST-DB ERROR]', err);
+    res.status(500).json({ error: err.message, code: err.code });
+  }
 });
 
 // ================= HELPER =================
