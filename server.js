@@ -321,7 +321,7 @@ app.get('/api/admin/exams', verifyAdminToken, async (req, res) => {
   } finally {
     connection.release();
   }
-
+});
 
 	// Publish / unpublish an exam (toggle published status)
 	app.put('/api/admin/exams/:id/publish', verifyAdminToken, async (req, res) => {
