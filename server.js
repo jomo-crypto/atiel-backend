@@ -8,18 +8,16 @@ const helmet = require('helmet');
 
 const app = express();
 app.use(helmet());
-
-
 app.use(cors({
   origin: [
-    'https://atielschools.com',          // your live site
-    'http://localhost:3000',             // local development
-    'https://localhost:3000'             // if you ever use https locally
+    'https://atielschools.com',
+    'http://localhost:3000',
+    'https://localhost:3000'
   ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],   // allowed HTTP methods
-  allowedHeaders: ['Content-Type', 'Authorization'],      // needed for JWT / Bearer token
-  credentials: true,                                      // if you ever use cookies/sessions
-  optionsSuccessStatus: 200                               // for old browsers
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+  optionsSuccessStatus: 200
 }));
 app.use(express.json());
 
@@ -39,17 +37,16 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  connectTimeout: 300000, // 5 minutes - extreme but tests if wakeup is the issue
+  connectTimeout: 300000,
   ssl: {
-  ca: require('fs').readFileSync('./aiven-ca.pem')
-}
+    ca: require('fs').readFileSync('./aiven-ca.pem')
+  }
 });
 
-// Add this right after pool creation for debug
+// Debug pool events
 pool.on('connection', (connection) => {
   console.log('[DEBUG] New connection established to Aiven');
 });
-
 pool.on('error', (err) => {
   console.error('[POOL ERROR]', err);
 });
@@ -67,10 +64,7 @@ app.get('/test-db', async (req, res) => {
 });
 
 // ================= HELPER =================
-
 const logError = (err) => console.error(new Date().toISOString(), err);
-
-
 
 // ================= MIDDLEWARE =================
 const verifyAdminToken = (req, res, next) => {
@@ -224,7 +218,6 @@ app.post('/api/admin/students/:id/regenerate-pin', verifyAdminToken, async (req,
 // ================= EXAMS =================
 app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
   const { examType, termNumber, year } = req.body;
-  // Validate input
   if (!examType || !['midterm', 'endterm'].includes(examType)) {
     return res.status(400).json({ error: "examType must be 'midterm' or 'endterm'" });
   }
@@ -234,7 +227,6 @@ app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
   if (!year || isNaN(year)) {
     return res.status(400).json({ error: "year is required and must be a number" });
   }
-  // Auto-generate clean name
   const name = `${examType === 'midterm' ? 'Mid Term' : 'End Term'} ${termNumber} ${year}`;
   const connection = await pool.getConnection();
   try {
@@ -330,9 +322,7 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
-    const examFormMap = {}; // { exam_id: Set of forms }
-
-    // ================= UPSERT =================
+    const examFormMap = {};
     for (const r of results) {
       const {
         student_id,
@@ -371,8 +361,6 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
         [student_id, subject, ca, midterm, endterm, exam_id, term, year]
       );
     }
-
-    // ================= CALCULATE SCORE, TOTAL_SCORE, AVERAGE, GRADE & POSITIONS =================
     for (const exId of Object.keys(examFormMap)) {
       await connection.query(
         `UPDATE results SET score = ca + midterm + endterm WHERE exam_id = ?`,
@@ -433,10 +421,8 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
         `,
         [exId]
       );
-
-      // Group by both form and school (use upserted results to get student_ids)
       const formSchoolPairs = new Set();
-      const studentForms = {}; // cache form/school to avoid repeated queries
+      const studentForms = {};
       for (const r of results) {
         const studentId = r.student_id;
         if (!studentForms[studentId]) {
@@ -453,8 +439,6 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
           formSchoolPairs.add(`${form}_${school}`);
         }
       }
-
-      // Now rank per form+school
       for (const pair of formSchoolPairs) {
         const [form, school] = pair.split('_');
         await connection.query(`SET @pos := 0`);
@@ -476,7 +460,6 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
         );
       }
     }
-
     await connection.commit();
     res.json({
       message: 'Results saved successfully with score, total_score, average_score, grade, and position calculated'
@@ -557,39 +540,26 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
     console.log(`[DEBUG] Found ${rows.length} rows for ${studentId}`);
     const data = Array.isArray(rows) ? rows : [];
     if (!data.length) return res.json({ student: { id: studentId }, report: {}, classPosition: '-' });
-
     const report = {};
-    const classPositions = {}; // per exam_name
-
-    // Group by exam to calculate position + total per exam
+    const classPositions = {};
     const examGroups = {};
     rows.forEach(row => {
       const examKey = row.exam_name;
       if (!examGroups[examKey]) examGroups[examKey] = [];
       examGroups[examKey].push(row);
     });
-
-    // For each exam, calculate student's rank + total (using stored position as base)
     Object.keys(examGroups).forEach(examKey => {
       const group = examGroups[examKey];
-      // Assume all rows in group have same form & school (single student view)
       const firstRow = group[0];
-      const form = firstRow.form; // need to fetch form separately if not in rows
-      const school = firstRow.school; // same
-
-      // Since position is stored per student/exam, take the position from first row
+      const form = firstRow.form;
+      const school = firstRow.school;
       const storedPosition = group[0].position || '-';
-
-      // Count unique students in this exam (for total)
       const uniqueStudents = new Set(group.map(r => r.student_id)).size;
       const total = uniqueStudents > 0 ? uniqueStudents : '-';
-
-      classPositions[examKey] = (storedPosition !== '-' && total !== '-') 
-        ? `${storedPosition}/${total}` 
+      classPositions[examKey] = (storedPosition !== '-' && total !== '-')
+        ? `${storedPosition}/${total}`
         : '-';
     });
-
-    // Build report as before
     rows.forEach(row => {
       const yearKey = String(row.year || 'Unknown');
       const termKey = `Term ${String(row.term || 'Unknown')}`;
@@ -599,29 +569,24 @@ app.get('/api/parent/results/:studentId', async (req, res) => {
       if (!report[yearKey][termKey][examKey]) {
         report[yearKey][termKey][examKey] = [];
       }
-				const totalScore = Number(row.total) || 0;
-				const hasScore = totalScore > 0;
-
-			  report[yearKey][termKey][examKey].push({
-			  subject: String(row.subject || 'Unknown'),
-			  ca: Number(row.ca) || 0,
-			  midterm: Number(row.midterm) || 0,
-			  endterm: Number(row.endterm) || 0,
-			  total: totalScore,
-			  position: hasScore ? (row.position || '-') : '-',
-			  grade: hasScore ? (row.grade || '-') : '-',
-			  remarks: hasScore ? (row.remarks || '-') : '-'
-		});
+      const totalScore = Number(row.total) || 0;
+      const hasScore = totalScore > 0;
+      report[yearKey][termKey][examKey].push({
+        subject: String(row.subject || 'Unknown'),
+        ca: Number(row.ca) || 0,
+        midterm: Number(row.midterm) || 0,
+        endterm: Number(row.endterm) || 0,
+        total: totalScore,
+        position: hasScore ? (row.position || '-') : '-',
+        grade: hasScore ? (row.grade || '-') : '-',
+        remarks: hasScore ? (row.remarks || '-') : '-'
+      });
     });
-
-    // Return with classPosition for the first exam (or all if you want)
-    // For simplicity, use the first exam's position (you can change to match active exam later)
     const firstExamPosition = Object.values(classPositions)[0] || '-';
-
-    res.json({ 
+    res.json({
       student: { id: studentId },
-      classPosition: firstExamPosition,  // Position for the main/current exam
-      report 
+      classPosition: firstExamPosition,
+      report
     });
   } catch (err) {
     console.error(err);
@@ -662,128 +627,147 @@ async function getResultsByComponent(studentId, component) {
     );
     console.log(`[DEBUG] Found ${rows.length} rows for ${component}`);
 
-    // Calculate position based on SUM of the COMPONENT scores across all subjects (SKIP ranking with ties)
-		const positionMap = {};       // student rank per group
-		const totalStudentsMap = {};  // total students in group
-
-		const groups = {};
-		rows.forEach(row => {
-		  const key = `${row.exam_name}_${row.form}`;
-		  if (!groups[key]) groups[key] = [];
-		  groups[key].push(row);
-		});
-
-		Object.keys(groups).forEach(key => {
-		  const group = groups[key];
-
-		  // Build student totals: { student_id: sum_of_component_scores }
-		  const studentTotals = {};
-		  group.forEach(row => {
-			const sid = row.student_id;
-			if (!studentTotals[sid]) studentTotals[sid] = 0;
-			studentTotals[sid] += Number(row.score) || 0;  // row.score = the component (ca/mid/endterm)
-		  });
-
-		  // Create array of students with their totals
-		  const rankedStudents = Object.entries(studentTotals).map(([sid, total]) => ({
-			student_id: sid,
-			total
-		  }));
-
-		  // Sort DESC by total
-		  rankedStudents.sort((a, b) => b.total - a.total);
-
-		  totalStudentsMap[key] = rankedStudents.length;
-
-		  // Assign SKIP ranking (ties share rank, next rank skips)
-		  let currentRank = 1;
-		  for (let i = 0; i < rankedStudents.length; i++) {
-			const student = rankedStudents[i];
-
-			// Only increase rank when total is different from previous
-			if (i > 0 && student.total !== rankedStudents[i - 1].total) {
-			  currentRank = i + 1;  // skip ranks after tie
-			}
-
-			// Store rank for our student
-			if (student.student_id === studentId) {
-			  const mapKey = `${row.exam_name}_${row.form}_${studentId}`;
-			  positionMap[mapKey] = currentRank;
-			}
-		  }
-		});
-
-    const report = {};
-
-    // Get the student's class position once (using first row as reference - all rows share exam/form)
-    let classPosition = '-';
+    // ────────────────────────────────────────────────
+    // Calculate STUDENT INFO POSITION (tab-specific sum across subjects)
+    // ────────────────────────────────────────────────
+    const studentInfoPositionMap = {}; // { exam_form_studentId: rank }
+    const studentInfoTotalStudentsMap = {}; // { exam_form: total students }
+    const examFormGroups = {};
+    rows.forEach(row => {
+      const key = `${row.exam_name}_${row.form}`;
+      if (!examFormGroups[key]) examFormGroups[key] = [];
+      examFormGroups[key].push(row);
+    });
+    Object.keys(examFormGroups).forEach(key => {
+      const group = examFormGroups[key];
+      // Sum component scores across subjects for each student
+      const studentTotals = {};
+      group.forEach(row => {
+        const sid = row.student_id;
+        if (!studentTotals[sid]) studentTotals[sid] = 0;
+        studentTotals[sid] += Number(row.score) || 0; // row.score = component (ca/mid/end)
+      });
+      const rankedStudents = Object.entries(studentTotals).map(([sid, total]) => ({
+        student_id: sid,
+        total
+      }));
+      rankedStudents.sort((a, b) => b.total - a.total);
+      studentInfoTotalStudentsMap[key] = rankedStudents.length;
+      let currentRank = 1;
+      for (let i = 0; i < rankedStudents.length; i++) {
+        const student = rankedStudents[i];
+        if (i > 0 && student.total !== rankedStudents[i - 1].total) {
+          currentRank = i + 1; // skip after tie
+        }
+        if (student.student_id === studentId) {
+          const mapKey = `${key}_${studentId}`;
+          studentInfoPositionMap[mapKey] = currentRank;
+        }
+      }
+    });
+    // Set classPosition (student info) using tab-specific sum ranking
+    let classPosition = '1/1'; // default if alone
     if (rows.length > 0) {
       const firstRow = rows[0];
       const formKey = `${firstRow.exam_name}_${firstRow.form}`;
-      const mapKey = `${firstRow.exam_name}_${firstRow.form}_${studentId || 'unknown'}`;
-      const rank = positionMap[mapKey] || '-';
-      const totalInGroup = totalStudentsMap[formKey] || '-';
-      classPosition = (rank !== '-' && totalInGroup !== '-') 
-        ? `${rank}/${totalInGroup}` 
-        : '-';
+      let rank = studentInfoPositionMap[`${formKey}_${studentId}`] || 1;
+      let totalStudents = studentInfoTotalStudentsMap[formKey] || 1;
+      if (totalStudents <= 1) {
+        rank = 1;
+        totalStudents = 1;
+      }
+      classPosition = `${rank}/${totalStudents}`;
     }
 
-			rows.forEach(row => {
-		  const yearKey = String(row.year || 'Unknown');
-		  const termKey = `Term ${String(row.term || 'Unknown')}`;
-		  if (!report[yearKey]) report[yearKey] = {};
-		  if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
-		  const examKey = String(row.exam_name || 'Unknown').trim();
-		  if (!report[yearKey][termKey][examKey]) {
-			report[yearKey][termKey][examKey] = [];
-		  }
+    // ────────────────────────────────────────────────
+    // Per-subject position for table rows (component score, only students who took the subject)
+    // ────────────────────────────────────────────────
+    const subjectPositionMap = {}; // { exam_form_subject_studentId: rank }
+    const subjectTotalStudentsMap = {}; // { exam_form_subject: count }
+    const subjectGroups = {};
+    rows.forEach(row => {
+      const key = `${row.exam_name}_${row.form}_${row.subject}`;
+      if (!subjectGroups[key]) subjectGroups[key] = [];
+      subjectGroups[key].push(row);
+    });
+    Object.keys(subjectGroups).forEach(key => {
+      const group = subjectGroups[key];
+      const validRows = group.filter(row => Number(row.score) > 0);
+      if (validRows.length === 0) return;
+      validRows.sort((a, b) => Number(b.score) - Number(a.score));
+      subjectTotalStudentsMap[key] = validRows.length;
+      let currentRank = 1;
+      for (let i = 0; i < validRows.length; i++) {
+        const row = validRows[i];
+        if (i > 0 && Number(row.score) === Number(validRows[i - 1].score)) {
+          // tie → same rank
+        } else {
+          currentRank = i + 1; // skip after tie
+        }
+        if (row.student_id === studentId) {
+          subjectPositionMap[`${key}_${studentId}`] = currentRank;
+        }
+      }
+    });
 
-		  // First declare score
-		  const score = Number(row.score) || 0;
+    // ────────────────────────────────────────────────
+    // Build report
+    // ────────────────────────────────────────────────
+    const report = {};
+    rows.forEach(row => {
+      const yearKey = String(row.year || 'Unknown');
+      const termKey = `Term ${String(row.term || 'Unknown')}`;
+      if (!report[yearKey]) report[yearKey] = {};
+      if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
+      const examKey = String(row.exam_name || 'Unknown').trim();
+      if (!report[yearKey][termKey][examKey]) {
+        report[yearKey][termKey][examKey] = [];
+      }
+      const score = Number(row.score) || 0;
+      // Per-subject position
+      const subjectKey = `${row.exam_name}_${row.form}_${row.subject}`;
+      let subjectRank = subjectPositionMap[`${subjectKey}_${studentId}`] || 1;
+      let subjectTotal = subjectTotalStudentsMap[subjectKey] || 1;
+      if (subjectTotal <= 1) {
+        subjectRank = 1;
+        subjectTotal = 1;
+      }
+      const positionDisplay = `${subjectRank}/${subjectTotal}`;
+      // Grade & remarks (unchanged)
+      let grade = '-';
+      let remarks = '-';
+      if (score > 0) {
+        const isJCE = row.form?.includes('Form 1') || row.form?.includes('Form 2');
+        if (score >= 90) {
+          grade = isJCE ? 'A' : '1';
+          remarks = isJCE ? 'Excellent' : 'Distinction';
+        } else if (score >= 70) {
+          grade = isJCE ? 'B' : '2';
+          remarks = isJCE ? 'Very Good' : 'Distinction';
+        } else if (score >= 60) {
+          grade = isJCE ? 'C' : '3';
+          remarks = isJCE ? 'Good' : 'Strong Credit';
+        } else if (score >= 45) {
+          grade = isJCE ? 'D' : '4';
+          remarks = isJCE ? 'Average' : 'Strong Credit';
+        } else {
+          grade = isJCE ? 'F' : '9';
+          remarks = isJCE ? 'Fail' : 'Fail';
+        }
+      }
+      report[yearKey][termKey][examKey].push({
+        subject: String(row.subject || 'Unknown'),
+        score: score,
+        position: positionDisplay,
+        grade: grade,
+        remarks: remarks,
+        exam_locked: Boolean(row.locked)
+      });
+    });
 
-		  // Position using skip ranking (from earlier calculation)
-		  const studentRank = positionMap[`${row.exam_name}_${row.form}_${studentId}`] || '-';
-		  const totalInGroup = totalStudentsMap[`${row.exam_name}_${row.form}`] || '-';
-		  const positionDisplay = (studentRank !== '-' && totalInGroup !== '-')
-			? `${studentRank}/${totalInGroup}`
-			: '-';
-
-		  // Grade & remarks
-		  let grade = '-';
-		  let remarks = '-';
-		  if (score > 0) {
-			const isJCE = row.form?.includes('Form 1') || row.form?.includes('Form 2');
-			if (score >= 90) {
-			  grade = isJCE ? 'A' : '1';
-			  remarks = isJCE ? 'Excellent' : 'Distinction';
-			} else if (score >= 70) {
-			  grade = isJCE ? 'B' : '2';
-			  remarks = isJCE ? 'Very Good' : 'Distinction';
-			} else if (score >= 60) {
-			  grade = isJCE ? 'C' : '3';
-			  remarks = isJCE ? 'Good' : 'Strong Credit';
-			} else if (score >= 45) {
-			  grade = isJCE ? 'D' : '4';
-			  remarks = isJCE ? 'Average' : 'Strong Credit';
-			} else {
-			  grade = isJCE ? 'F' : '9';
-			  remarks = isJCE ? 'Fail' : 'Fail';
-			}
-		  }
-
-		  report[yearKey][termKey][examKey].push({
-			subject: String(row.subject || 'Unknown'),
-			score: score,
-			position: positionDisplay,
-			grade: grade,
-			remarks: remarks,
-			exam_locked: Boolean(row.locked)
-		  });
-		});
-
-    return { 
+    return {
       report,
-      classPosition  // ← this is the new field for the top of the card
+      classPosition // tab-specific sum-based position
     };
   } catch (err) {
     console.error(`[ERROR] ${component} failed for ${studentId}:`, err.message);
@@ -792,6 +776,7 @@ async function getResultsByComponent(studentId, component) {
     connection.release();
   }
 }
+
 // ────────────────────────────────────────────────
 // Component-specific endpoints
 // ────────────────────────────────────────────────
