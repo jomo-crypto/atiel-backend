@@ -662,36 +662,56 @@ async function getResultsByComponent(studentId, component) {
     );
     console.log(`[DEBUG] Found ${rows.length} rows for ${component}`);
 
-    // Calculate class position and total students per exam + form
-    const positionMap = {}; // { exam_name_form_studentId: rank }
-    const totalStudentsMap = {}; // { exam_name_form: total count }
+    // Calculate position based on SUM of the COMPONENT scores across all subjects (SKIP ranking with ties)
+		const positionMap = {};       // student rank per group
+		const totalStudentsMap = {};  // total students in group
 
-    // Group rows by exam + form
-    const groups = {};
-    rows.forEach(row => {
-      const key = `${row.exam_name}_${row.form}`;
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(row);
-    });
+		const groups = {};
+		rows.forEach(row => {
+		  const key = `${row.exam_name}_${row.form}`;
+		  if (!groups[key]) groups[key] = [];
+		  groups[key].push(row);
+		});
 
-    // Rank and count per group
-    Object.keys(groups).forEach(key => {
-      const group = groups[key];
-      totalStudentsMap[key] = group.length; // TOTAL STUDENTS IN THIS GROUP
+		Object.keys(groups).forEach(key => {
+		  const group = groups[key];
 
-      group.sort((a, b) => Number(b.score) - Number(a.score));
+		  // Build student totals: { student_id: sum_of_component_scores }
+		  const studentTotals = {};
+		  group.forEach(row => {
+			const sid = row.student_id;
+			if (!studentTotals[sid]) studentTotals[sid] = 0;
+			studentTotals[sid] += Number(row.score) || 0;  // row.score = the component (ca/mid/endterm)
+		  });
 
-      let currentRank = 1;
-      group.forEach((row, index) => {
-        if (index > 0 && Number(row.score) === Number(group[index - 1].score)) {
-          // tie: same rank as previous
-        } else {
-          currentRank = index + 1;
-        }
-        const mapKey = `${row.exam_name}_${row.form}_${studentId}`;
-        positionMap[mapKey] = currentRank;
-      });
-    });
+		  // Create array of students with their totals
+		  const rankedStudents = Object.entries(studentTotals).map(([sid, total]) => ({
+			student_id: sid,
+			total
+		  }));
+
+		  // Sort DESC by total
+		  rankedStudents.sort((a, b) => b.total - a.total);
+
+		  totalStudentsMap[key] = rankedStudents.length;
+
+		  // Assign SKIP ranking (ties share rank, next rank skips)
+		  let currentRank = 1;
+		  for (let i = 0; i < rankedStudents.length; i++) {
+			const student = rankedStudents[i];
+
+			// Only increase rank when total is different from previous
+			if (i > 0 && student.total !== rankedStudents[i - 1].total) {
+			  currentRank = i + 1;  // skip ranks after tie
+			}
+
+			// Store rank for our student
+			if (student.student_id === studentId) {
+			  const mapKey = `${row.exam_name}_${row.form}_${studentId}`;
+			  positionMap[mapKey] = currentRank;
+			}
+		  }
+		});
 
     const report = {};
 
@@ -726,9 +746,11 @@ async function getResultsByComponent(studentId, component) {
   const mapKey = `${row.exam_name}_${row.form}_${studentId || 'unknown'}`;
   const rank = positionMap[mapKey] || '-';
   const totalInGroup = totalStudentsMap[formKey] || '-';
-  const positionDisplay = (score > 0 && rank !== '-' && totalInGroup !== '-')
-    ? `${rank}/${totalInGroup}`
-    : '-';
+  const rank = positionMap[`${row.exam_name}_${row.form}_${studentId}`] || '-';
+	const totalInGroup = totalStudentsMap[`${row.exam_name}_${row.form}`] || '-';
+	const positionDisplay = (rank !== '-' && totalInGroup !== '-')
+	  ? `${rank}/${totalInGroup}`
+	  : '-';
 
   // Grade & remarks
   let grade = '-';
