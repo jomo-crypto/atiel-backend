@@ -284,6 +284,100 @@ app.post('/api/admin/students/:id/regenerate-pin', verifyAdminToken, async (req,
     connection.release();
   }
 });
+
+// GET all users
+app.get('/api/admin/system-users', verifyAdminToken, async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const [rows] = await connection.query(
+      'SELECT id, username, role, created_at FROM admins ORDER BY created_at DESC'
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  } finally {
+    connection.release();
+  }
+});
+
+// POST - add new user
+app.post('/api/admin/system-users', verifyAdminToken, async (req, res) => {
+  const { username, password, role } = req.body;
+  if (!username || !password || !role) {
+    return res.status(400).json({ error: 'Username, password and role required' });
+  }
+  const connection = await pool.getConnection();
+  try {
+    const passwordHash = await bcrypt.hash(password, 10);
+    await connection.query(
+      'INSERT INTO admins (username, password_hash, role) VALUES (?, ?, ?)',
+      [username.trim(), passwordHash, role.trim()]
+    );
+    res.json({ message: 'User added successfully' });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'Username already exists' });
+    }
+    console.error(err);
+    res.status(500).json({ error: 'Failed to add user' });
+  } finally {
+    connection.release();
+  }
+});
+
+// PUT - update user (role or password)
+app.put('/api/admin/system-users/:id', verifyAdminToken, async (req, res) => {
+  const { id } = req.params;
+  const { password, role } = req.body;
+  const connection = await pool.getConnection();
+  try {
+    let query = 'UPDATE admins SET ';
+    const params = [];
+    if (password) {
+      const hash = await bcrypt.hash(password, 10);
+      query += 'password_hash = ?, ';
+      params.push(hash);
+    }
+    if (role) {
+      query += 'role = ?, ';
+      params.push(role.trim());
+    }
+    if (params.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+    query = query.slice(0, -2) + ' WHERE id = ?';
+    params.push(id);
+
+    const [result] = await connection.query(query, params);
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'User not found' });
+    res.json({ message: 'User updated successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update user' });
+  } finally {
+    connection.release();
+  }
+});
+
+// DELETE user
+app.delete('/api/admin/system-users/:id', verifyAdminToken, async (req, res) => {
+  const { id } = req.params;
+  // Optional: prevent self-deletion
+  if (req.admin.id === parseInt(id)) {
+    return res.status(403).json({ error: 'Cannot delete your own account' });
+  }
+  const connection = await pool.getConnection();
+  try {
+    const [result] = await connection.query('DELETE FROM admins WHERE id = ?', [id]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'User not found' });
+    res.json({ message: 'User deleted successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to delete user' });
+  } finally {
+    connection.release();
+  }
+});
+
 // ================= EXAMS =================
 app.post('/api/admin/exams', verifyAdminToken, async (req, res) => {
   const { examType, termNumber, year } = req.body;
