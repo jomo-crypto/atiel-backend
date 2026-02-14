@@ -536,59 +536,53 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
           );
 
           // Ranking per form + school
-          const formSchoolPairs = new Set();
-          const studentForms = {};
-          for (const r of results) {
-            const studentId = r.student_id;
-            if (!studentForms[studentId]) {
-              const [studentRow] = await bgConn.query(
-                'SELECT form, school FROM students WHERE id = ?',
-                [studentId]
-              );
-              if (studentRow.length === 0) {
-                console.warn(`Student ${studentId} not found during background ranking - skipping`);
-                continue;
-              }
-              const { form, school } = studentRow[0];
-              studentForms[studentId] = { form, school };
-              formSchoolPairs.add(`${form}_${school}`);
-            }
-          }
+      const formSchoolPairs = new Set();
+      const studentForms = {};
+      for (const r of results) {
+        const studentId = r.student_id;
+        if (!studentForms[studentId]) {
+          const [studentRow] = await bgConn.query(
+            'SELECT form, school FROM students WHERE id = ?',
+            [studentId]
+          );
+          if (studentRow.length === 0) continue;
+          const { form, school } = studentRow[0];
+          studentForms[studentId] = { form, school };
+          formSchoolPairs.add(`${form}_${school}`);
+        }
+      }
 
-          for (const pair of formSchoolPairs) {
-		  const [form, school] = pair.split('_');
-		  const cleanForm = form.trim();
-		  const cleanSchool = school.trim();
+      for (const pair of formSchoolPairs) {
+        const [form, school] = pair.split('_');
+        const cleanForm = form.trim();
+        const cleanSchool = school.trim();
 
-		  console.log(`[BACKGROUND RANKING] Processing ${cleanForm} - ${cleanSchool} for exam ${exId}`);
+        console.log(`[BACKGROUND RANKING] Processing ${cleanForm} - ${cleanSchool} for exam ${exId}`);
 
-		  try {
-			// Reset counter
-			await bgConn.query(`SET @pos := 0`);
+        await bgConn.query(`SET @pos := 0`);
 
-			// Rank
-			await bgConn.query(
-			  `
-			  UPDATE results r
-			  JOIN (
-				SELECT 
-				  r.student_id,
-				  (@pos := @pos + 1) AS rank
-				FROM results r
-				JOIN students s ON r.student_id = s.id
-				WHERE r.exam_id = ?
-				  AND s.form = ?
-				  AND s.school = ?
-				GROUP BY r.student_id
-				ORDER BY SUM(r.score) DESC
-			  ) ranked
-			  ON r.student_id = ranked.student_id 
-				 AND r.exam_id = ?
-			  SET r.position = ranked.rank
-			  `,
-			  [exId, cleanForm, cleanSchool, exId]
-			);
-		}
+        await bgConn.query(
+          `
+          UPDATE results r
+          JOIN (
+            SELECT
+              r.student_id,
+              (@pos := @pos + 1) AS rank
+            FROM results r
+            JOIN students s ON r.student_id = s.id
+            WHERE r.exam_id = ?
+              AND s.form = ?
+              AND s.school = ?
+            GROUP BY r.student_id
+            ORDER BY SUM(r.score) DESC
+          ) ranked
+          ON r.student_id = ranked.student_id
+             AND r.exam_id = ?
+          SET r.position = ranked.rank
+          `,
+          [exId, cleanForm, cleanSchool, exId]
+        );
+      }
         }
         console.log(`Background grade/position calculation completed for exam(s): ${Object.keys(examFormMap).join(', ')}`);
       } catch (bgErr) {
