@@ -1,4 +1,13 @@
 require('dotenv').config();
+// At the top, after require('dotenv')
+const requiredEnv = ['DB_HOST', 'DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_NAME', 'JWT_SECRET'];
+requiredEnv.forEach(key => {
+  if (!process.env[key]) {
+    console.error(`Missing required env var: ${key}`);
+    process.exit(1);
+  }
+});
+
 const express = require('express');
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcrypt');
@@ -547,25 +556,39 @@ app.post('/api/admin/results/bulk', verifyAdminToken, async (req, res) => {
           }
 
           for (const pair of formSchoolPairs) {
-            const [form, school] = pair.split('_');
-            await bgConn.query(`SET @pos := 0`);
-            await bgConn.query(
-              `
-              UPDATE results r
-              JOIN (
-                SELECT r.student_id, (@pos := @pos + 1) AS rank
-                FROM results r
-                JOIN students s ON r.student_id = s.id
-                WHERE r.exam_id = ? AND s.form = ? AND s.school = ?
-                GROUP BY r.student_id
-                ORDER BY SUM(r.score) DESC
-              ) ranked
-              ON r.student_id = ranked.student_id AND r.exam_id = ?
-              SET r.position = ranked.rank
-              `,
-              [exId, form, school, exId]
-            );
-          }
+		  const [form, school] = pair.split('_');
+		  const cleanForm = form.trim();
+		  const cleanSchool = school.trim();
+
+		  console.log(`[BACKGROUND RANKING] Processing ${cleanForm} - ${cleanSchool} for exam ${exId}`);
+
+		  try {
+			// Reset counter
+			await bgConn.query(`SET @pos := 0`);
+
+			// Rank
+			await bgConn.query(
+			  `
+			  UPDATE results r
+			  JOIN (
+				SELECT 
+				  r.student_id,
+				  (@pos := @pos + 1) AS rank
+				FROM results r
+				JOIN students s ON r.student_id = s.id
+				WHERE r.exam_id = ?
+				  AND s.form = ?
+				  AND s.school = ?
+				GROUP BY r.student_id
+				ORDER BY SUM(r.score) DESC
+			  ) ranked
+			  ON r.student_id = ranked.student_id 
+				 AND r.exam_id = ?
+			  SET r.position = ranked.rank
+			  `,
+			  [exId, cleanForm, cleanSchool, exId]
+			);
+		}
         }
         console.log(`Background grade/position calculation completed for exam(s): ${Object.keys(examFormMap).join(', ')}`);
       } catch (bgErr) {
