@@ -160,28 +160,53 @@ const generateStudentId = async (school) => {
 // ================= HEALTH CHECK =================
 app.get('/', (req, res) => res.status(200).send('OK'));
 // ================= ADMIN AUTH =================
-app.post('/api/admin/login', async (req, res) => {
+app.post('/api/admin/login', loginLimiter, async (req, res) => {  // ← add stricter limiter
   const { username, password } = req.body;
-  if (!username || !password)
-    return res.status(400).json({ error: 'Username and password required' });
+
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password are required' });
+  }
+
   const connection = await pool.getConnection();
   try {
     const [rows] = await connection.query(
-      'SELECT * FROM admins WHERE username = ?',
-      [username]
+      'SELECT id, username, password_hash, role, school FROM admins WHERE username = ?',
+      [username.trim()]
     );
-    if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
-    const match = await bcrypt.compare(password, rows[0].password_hash);
-    if (!match) return res.status(401).json({ error: 'Invalid credentials' });
+
+    if (!rows.length) {
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+
+    const user = rows[0];
+
+    const match = await bcrypt.compare(password, user.password_hash);
+    if (!match) {
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+
+    // Update last_login
+    await connection.query(
+      'UPDATE admins SET last_login = NOW() WHERE id = ?',
+      [user.id]
+    );
+
+    // Create token with all needed info
     const token = jwt.sign(
-      { id: rows[0].id },
+      {
+        id: user.id,
+        username: user.username,
+        role: user.role || 'admin',
+        school: user.school || null,  // null = no restriction (admins)
+      },
       process.env.JWT_SECRET,
       { expiresIn: '8h' }
     );
+
     res.json({ token });
   } catch (err) {
     logError(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: 'Server error during login' });
   } finally {
     connection.release();
   }
@@ -228,21 +253,31 @@ app.post('/api/admin/students', verifyAdminToken, async (req, res) => {
   }
 });
 app.get('/api/admin/students', verifyAdminToken, async (req, res) => {
-  const { form, school } = req.query;
+  const { form, school: querySchool } = req.query;
   const connection = await pool.getConnection();
   try {
     let query = 'SELECT id, name, school, form FROM students WHERE 1';
     const params = [];
+
+    // IMPORTANT: Restrict teachers to their assigned school
+    if (req.admin.role === 'teacher' && req.admin.school) {
+      query += ' AND school = ?';
+      params.push(req.admin.school);
+    }
+    // Admins can still use ?school= query param if they want to filter
+    else if (querySchool && querySchool.trim() !== '') {
+      query += ' AND LOWER(school) = LOWER(?)';
+      params.push(querySchool.trim());
+    }
+
     if (form && form.trim() !== '') {
       query += ' AND form = ?';
       params.push(form.trim());
     }
-    if (school && school.trim() !== '') {
-      query += ' AND LOWER(school) = LOWER(?)';
-      params.push(school.trim());
-    }
+
     query += ' ORDER BY name';
     console.log('STUDENTS SQL:', query, params);
+
     const [rows] = await connection.query(query, params);
     res.json(rows);
   } catch (err) {
@@ -301,18 +336,45 @@ app.get('/api/admin/system-users', verifyAdminToken, async (req, res) => {
   }
 });
 
-// POST - add new user
+// GET all users (now includes school)
+app.get('/api/admin/system-users', verifyAdminToken, async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const [rows] = await connection.query(
+      'SELECT id, username, role, school, created_at FROM admins ORDER BY created_at DESC'
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  } finally {
+    connection.release();
+  }
+});
+
+// POST - add new user (now supports school)
 app.post('/api/admin/system-users', verifyAdminToken, async (req, res) => {
-  const { username, password, role } = req.body;
+  const { username, password, role, school } = req.body;
+
   if (!username || !password || !role) {
     return res.status(400).json({ error: 'Username, password and role required' });
   }
+
+  // Validate school only for teachers
+  let finalSchool = null;
+  if (role === 'teacher') {
+    if (!['boys', 'girls'].includes(school?.trim())) {
+      return res.status(400).json({ error: 'Teachers must be assigned to "boys" or "girls" school' });
+    }
+    finalSchool = school.trim();
+  }
+
   const connection = await pool.getConnection();
   try {
     const passwordHash = await bcrypt.hash(password, 10);
     await connection.query(
-      'INSERT INTO admins (username, password_hash, role) VALUES (?, ?, ?)',
-      [username.trim(), passwordHash, role.trim()]
+      'INSERT INTO admins (username, password_hash, role, school) VALUES (?, ?, ?, ?)',
+      [username.trim(), passwordHash, role.trim(), finalSchool]
     );
     res.json({ message: 'User added successfully' });
   } catch (err) {
@@ -326,24 +388,42 @@ app.post('/api/admin/system-users', verifyAdminToken, async (req, res) => {
   }
 });
 
-// PUT - update user (role or password)
+// PUT - update user (now supports changing school for teachers)
 app.put('/api/admin/system-users/:id', verifyAdminToken, async (req, res) => {
   const { id } = req.params;
-  const { password, role } = req.body;
+  const { password, role, school } = req.body;
+
   const connection = await pool.getConnection();
   try {
     let query = 'UPDATE admins SET ';
     const params = [];
+
     if (password) {
       const hash = await bcrypt.hash(password, 10);
       query += 'password_hash = ?, ';
       params.push(hash);
     }
+
     if (role) {
       query += 'role = ?, ';
       params.push(role.trim());
     }
+
+    // Handle school for teachers
+    if (role === 'teacher' || (role === undefined && school !== undefined)) {
+      let finalSchool = null;
+      if (school) {
+        if (!['boys', 'girls'].includes(school.trim())) {
+          return res.status(400).json({ error: 'Invalid school for teacher' });
+        }
+        finalSchool = school.trim();
+      }
+      query += 'school = ?, ';
+      params.push(finalSchool);
+    }
+
     if (params.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+
     query = query.slice(0, -2) + ' WHERE id = ?';
     params.push(id);
 
@@ -357,6 +437,7 @@ app.put('/api/admin/system-users/:id', verifyAdminToken, async (req, res) => {
     connection.release();
   }
 });
+
 
 // DELETE user
 app.delete('/api/admin/system-users/:id', verifyAdminToken, async (req, res) => {
