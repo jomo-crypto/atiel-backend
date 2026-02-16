@@ -876,10 +876,114 @@ async function getResultsByComponent(studentId, component) {
       ORDER BY e.year DESC, e.term ASC, e.name ASC, r.subject ASC
       `,
       [studentId]
-    );
+     );
     console.log(`[DEBUG] Found ${rows.length} rows for ${component}`);
-    // ... rest of your getResultsByComponent function remains unchanged ...
-    // (keeping the full function body as-is, no changes here)
+
+    // Calculate class position and total students per exam + form
+    const positionMap = {}; // { exam_name_form_studentId: rank }
+    const totalStudentsMap = {}; // { exam_name_form: total count }
+
+    // Group rows by exam + form
+    const groups = {};
+    rows.forEach(row => {
+      const key = `${row.exam_name}_${row.form}`;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(row);
+    });
+
+    // Rank and count per group
+    Object.keys(groups).forEach(key => {
+      const group = groups[key];
+      totalStudentsMap[key] = group.length; // TOTAL STUDENTS IN THIS GROUP
+
+      group.sort((a, b) => Number(b.score) - Number(a.score));
+
+      let currentRank = 1;
+      group.forEach((row, index) => {
+        if (index > 0 && Number(row.score) === Number(group[index - 1].score)) {
+          // tie: same rank as previous
+        } else {
+          currentRank = index + 1;
+        }
+        const mapKey = `${row.exam_name}_${row.form}_${studentId}`;
+        positionMap[mapKey] = currentRank;
+      });
+    });
+
+    const report = {};
+
+    // Get the student's class position once (using first row as reference - all rows share exam/form)
+    let classPosition = '-';
+    if (rows.length > 0) {
+      const firstRow = rows[0];
+      const formKey = `${firstRow.exam_name}_${firstRow.form}`;
+      const mapKey = `${firstRow.exam_name}_${firstRow.form}_${studentId || 'unknown'}`;
+      const rank = positionMap[mapKey] || '-';
+      const totalInGroup = totalStudentsMap[formKey] || '-';
+      classPosition = (rank !== '-' && totalInGroup !== '-') 
+        ? `${rank}/${totalInGroup}` 
+        : '-';
+    }
+
+    rows.forEach(row => {
+  const yearKey = String(row.year || 'Unknown');
+  const termKey = `Term ${String(row.term || 'Unknown')}`;
+  if (!report[yearKey]) report[yearKey] = {};
+  if (!report[yearKey][termKey]) report[yearKey][termKey] = {};
+  const examKey = String(row.exam_name || 'Unknown').trim();
+  if (!report[yearKey][termKey][examKey]) {
+    report[yearKey][termKey][examKey] = [];
+  }
+
+  // First declare score (move this up!)
+  const score = Number(row.score) || 0;
+
+  // Position per subject (now safe to use score)
+  const formKey = `${row.exam_name}_${row.form}`;
+  const mapKey = `${row.exam_name}_${row.form}_${studentId || 'unknown'}`;
+  const rank = positionMap[mapKey] || '-';
+  const totalInGroup = totalStudentsMap[formKey] || '-';
+  const positionDisplay = (score > 0 && rank !== '-' && totalInGroup !== '-')
+    ? `${rank}/${totalInGroup}`
+    : '-';
+
+  // Grade & remarks
+  let grade = '-';
+  let remarks = '-';
+  if (score > 0) {
+    const isJCE = row.form?.includes('Form 1') || row.form?.includes('Form 2');
+    if (score >= 90) {
+      grade = isJCE ? 'A' : '1';
+      remarks = isJCE ? 'Excellent' : 'Distinction';
+    } else if (score >= 70) {
+      grade = isJCE ? 'B' : '2';
+      remarks = isJCE ? 'Very Good' : 'Distinction';
+    } else if (score >= 60) {
+      grade = isJCE ? 'C' : '3';
+      remarks = isJCE ? 'Good' : 'Strong Credit';
+    } else if (score >= 45) {
+      grade = isJCE ? 'D' : '4';
+      remarks = isJCE ? 'Average' : 'Strong Credit';
+    } else {
+      grade = isJCE ? 'F' : '9';
+      remarks = isJCE ? 'Fail' : 'Fail';
+    }
+  }
+
+  report[yearKey][termKey][examKey].push({
+    subject: String(row.subject || 'Unknown'),
+    score: score,
+    position: positionDisplay,
+    grade: grade,
+    remarks: remarks,
+    exam_locked: Boolean(row.locked)
+  });
+});
+
+    return { 
+      report,
+      classPosition  // ← this is the new field for the top of the card
+    };
   } catch (err) {
     console.error(`[ERROR] ${component} failed for ${studentId}:`, err.message);
     return { report: {}, classPosition: '-' };
